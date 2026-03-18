@@ -268,10 +268,12 @@ class ThinkingProxy {
                 modifiedBody = result.0
                 thinkingEnabled = result.1
             }
-            // Strip cache_control fields that cause 400 errors via the OAuth route
-            if let stripped = stripCacheControl(from: modifiedBody) {
-                modifiedBody = stripped
-            }
+            // NOTE: Stripping cache_control fields breaks Claude's prompt caching feature,
+            // causing excessive token usage in long-running conversations.
+            // Disabled to restore prompt caching and reduce usage.
+            // if let stripped = stripCacheControl(from: modifiedBody) {
+            //     modifiedBody = stripped
+            // }
         }
         
         // Route Claude requests through Vercel AI Gateway when configured
