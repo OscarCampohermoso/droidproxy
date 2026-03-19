@@ -131,6 +131,49 @@ Edit your Factory configuration file at `~/.factory/config.json` (if the file do
     },
 
     {
+      "model_display_name": "CC: Opus 4.6",
+      "model": "claude-opus-4-6",
+      "base_url": "http://localhost:8317",
+      "api_key": "dummy-not-used",
+      "provider": "anthropic"
+    },
+    {
+      "model_display_name": "CC: Opus 4.6 (High)",
+      "model": "claude-opus-4-6-thinking-64000",
+      "base_url": "http://localhost:8317",
+      "api_key": "dummy-not-used",
+      "provider": "anthropic"
+    },
+    {
+      "model_display_name": "CC: Opus 4.6 (Max)",
+      "model": "claude-opus-4-6-thinking-128000",
+      "base_url": "http://localhost:8317",
+      "api_key": "dummy-not-used",
+      "provider": "anthropic"
+    },
+    {
+      "model_display_name": "CC: Sonnet 4.6",
+      "model": "claude-sonnet-4-6",
+      "base_url": "http://localhost:8317",
+      "api_key": "dummy-not-used",
+      "provider": "anthropic"
+    },
+    {
+      "model_display_name": "CC: Sonnet 4.6 (High)",
+      "model": "claude-sonnet-4-6-thinking-64000",
+      "base_url": "http://localhost:8317",
+      "api_key": "dummy-not-used",
+      "provider": "anthropic"
+    },
+    {
+      "model_display_name": "CC: Sonnet 4.6 (Max)",
+      "model": "claude-sonnet-4-6-thinking-128000",
+      "base_url": "http://localhost:8317",
+      "api_key": "dummy-not-used",
+      "provider": "anthropic"
+    },
+
+    {
       "model_display_name": "AG: Opus 4.5 Thinking",
       "model": "gemini-claude-opus-4-5-thinking",
       "base_url": "http://localhost:8317/v1",
@@ -518,10 +561,25 @@ If the suffix is not a valid integer (e.g., `-thinking-blabla`), VibeProxy strip
 - Transparent thought process in the response
 
 **Supported Models**:
-- Claude Opus 4.5 (`claude-opus-4-5-*`)
-- Claude Sonnet 4.5 (`claude-sonnet-4-5-*`)
+- Claude Opus 4.6 (`claude-opus-4-6*`) — **Adaptive thinking**, 128K output, 1M context
+- Claude Sonnet 4.6 (`claude-sonnet-4-6*`) — **Adaptive thinking**, 128K output, 1M context
+- Claude Opus 4.5 (`claude-opus-4-5-*`) — Budget-based thinking, 64K output, 200K context
+- Claude Sonnet 4.5 (`claude-sonnet-4-5-*`) — Budget-based thinking, 64K output, 1M context
 
 This works seamlessly with Factory CLI - just select the thinking variant in your model selector!
+
+### Adaptive Thinking (Opus 4.6+, Sonnet 4.6+)
+
+Claude Opus 4.6 and Sonnet 4.6 use **adaptive thinking** instead of a fixed token budget. With adaptive thinking, Claude automatically decides how much to think based on prompt complexity — there is no explicit `budget_tokens` parameter.
+
+The `-thinking-NUMBER` suffix still works for these models, but instead of setting a thinking budget, it sets a **max output token floor** that gives the model more room for both thinking and response output (up to 128K).
+
+**Recommended presets for 4.6 models:**
+- `claude-opus-4-6-thinking-64000` → **High** output room (64K floor)
+- `claude-opus-4-6-thinking-128000` → **Max** output room (128K floor)
+
+> [!TIP]
+> For most use cases, the base `claude-opus-4-6` or `claude-sonnet-4-6` model (without a thinking suffix) is sufficient — adaptive thinking is always enabled when requested via the thinking suffix, and the API will allocate output tokens as needed.
 
 ### Interleaved Thinking (Automatic)
 

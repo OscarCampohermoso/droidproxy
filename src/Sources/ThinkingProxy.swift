@@ -33,11 +33,23 @@ class ThinkingProxy {
     var vercelConfig = VercelGatewayConfig(enabled: false, apiKey: "")
     
     private enum Config {
-        static let hardTokenCap = 32000
+        static let defaultHardTokenCap = 32_000     // Opus 4.5, Sonnet 4.5, and older
+        static let extendedHardTokenCap = 128_000   // Opus 4.6+, Sonnet 4.6+ (128K output)
         static let minimumHeadroom = 1024
         static let headroomRatio = 0.1
         static let vercelGatewayHost = "ai-gateway.vercel.sh"
         static let anthropicVersion = "2023-06-01"
+
+        /// Models that support extended output (128K) and adaptive thinking
+        private static let extendedModels = ["opus-4-6", "opus-4-7", "sonnet-4-6", "sonnet-4-7"]
+
+        /// Returns the max output token cap for a given (cleaned) model name.
+        static func hardTokenCap(for model: String) -> Int {
+            if extendedModels.contains(where: { model.contains($0) }) {
+                return extendedHardTokenCap
+            }
+            return defaultHardTokenCap
+        }
     }
     
     /**
@@ -347,110 +359,136 @@ class ThinkingProxy {
      Returns tuple of (modifiedJSON, needsTransformation)
      */
     private func processThinkingParameter(jsonString: String) -> (String, Bool)? {
+        // Parse JSON only to read values — we'll do surgical string replacements to preserve key order
+        // (JSONSerialization.data reorders keys, which breaks Anthropic's prompt cache matching)
         guard let jsonData = jsonString.data(using: .utf8),
-              var json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
               let model = json["model"] as? String else {
             return nil
         }
-        
+
         // Only process Claude models (including gemini-claude variants)
         guard model.starts(with: "claude-") || model.starts(with: "gemini-claude-") else {
             return (jsonString, false)  // Not Claude, pass through
         }
-        
-        // Check for thinking suffix pattern: -thinking-NUMBER
+
+        // Check for thinking suffix pattern: -thinking-NUMBER or -thinking-NUMBER-EFFORT
+        // where EFFORT is one of: low, medium, high, max
         let thinkingPrefix = "-thinking-"
         if let thinkingRange = model.range(of: thinkingPrefix, options: .backwards),
            thinkingRange.upperBound < model.endIndex {
-            
-            // Extract the number after "-thinking-"
-            let budgetString = String(model[thinkingRange.upperBound...])
-            
-            // For gemini-claude-* models, preserve "-thinking" and only strip the number
-            // e.g. gemini-claude-opus-4-5-thinking-10000 -> gemini-claude-opus-4-5-thinking
-            // For claude-* models, strip the entire suffix
-            // e.g. claude-opus-4-5-20251101-thinking-10000 -> claude-opus-4-5-20251101
+
+            // Extract everything after "-thinking-" (e.g. "128000" or "128000-max")
+            let suffixString = String(model[thinkingRange.upperBound...])
+
+            // Parse optional effort level from suffix (e.g. "128000-max" → budget="128000", effort="max")
+            let validEfforts = ["low", "medium", "high", "max"]
+            let budgetString: String
+            var effortLevel: String? = nil
+            if let lastDash = suffixString.lastIndex(of: "-") {
+                let candidate = String(suffixString[suffixString.index(after: lastDash)...])
+                if validEfforts.contains(candidate) {
+                    budgetString = String(suffixString[..<lastDash])
+                    effortLevel = candidate
+                } else {
+                    budgetString = suffixString
+                }
+            } else {
+                budgetString = suffixString
+            }
+
+            // Determine clean model name
             let cleanModel: String
             if model.starts(with: "gemini-claude-") {
-                cleanModel = String(model[..<thinkingRange.upperBound].dropLast(1))  // Keep "-thinking", drop trailing "-"
+                cleanModel = String(model[..<thinkingRange.upperBound].dropLast(1))
             } else {
                 cleanModel = String(model[..<thinkingRange.lowerBound])
             }
-            json["model"] = cleanModel
-            
-            // Only add thinking parameter if it's a valid integer
+
+            // --- Surgical string replacement: swap model name in original JSON ---
+            // This preserves key ordering and all other fields exactly as-is
+            var result = jsonString
+
+            // Replace model name (escape for JSON string matching)
+            let escapedModel = model.replacingOccurrences(of: "\"", with: "\\\"")
+            let escapedClean = cleanModel.replacingOccurrences(of: "\"", with: "\\\"")
+            result = result.replacingOccurrences(of: "\"\(escapedModel)\"", with: "\"\(escapedClean)\"")
+
             if let budget = Int(budgetString), budget > 0 {
-                let effectiveBudget = min(budget, Config.hardTokenCap - 1)
+                let modelCap = Config.hardTokenCap(for: cleanModel)
+                let effectiveBudget = min(budget, modelCap - 1)
                 if effectiveBudget != budget {
-                    NSLog("[ThinkingProxy] Adjusted thinking budget from \(budget) to \(effectiveBudget) to stay within limits")
+                    NSLog("[ThinkingProxy] Adjusted thinking budget from \(budget) to \(effectiveBudget) to stay within limits (cap: \(modelCap))")
                 }
 
-                // Claude Opus 4.6+ requires adaptive thinking; older models use enabled+budget_tokens
-                let isAdaptiveModel = cleanModel.contains("opus-4-6") || cleanModel.contains("opus-4-7")
+                // Build thinking parameter JSON
+                let adaptiveModels = ["opus-4-6", "opus-4-7", "sonnet-4-6", "sonnet-4-7"]
+                let isAdaptiveModel = adaptiveModels.contains(where: { cleanModel.contains($0) })
+                let thinkingJson: String
                 if isAdaptiveModel {
-                    json["thinking"] = ["type": "adaptive"]
-                    NSLog("[ThinkingProxy] Using adaptive thinking for model '\(cleanModel)'")
+                    thinkingJson = "{\"type\":\"adaptive\"}"
+                    NSLog("[ThinkingProxy] Using adaptive thinking for model '\(cleanModel)' (budget \(effectiveBudget) used as max_tokens floor)")
                 } else {
-                    json["thinking"] = [
-                        "type": "enabled",
-                        "budget_tokens": effectiveBudget
-                    ]
+                    thinkingJson = "{\"type\":\"enabled\",\"budget_tokens\":\(effectiveBudget)}"
                 }
-                
-                // Ensure max token limits are greater than the thinking budget
-                // Claude requires: max_output_tokens (or legacy max_tokens) > thinking.budget_tokens
-                // (only relevant for non-adaptive models, but safe to set for all)
+
+                // Inject thinking parameter and adjust max_tokens via surgical insertion
+                // Insert "thinking":... right after the "model":"..." field
+                let modelField = "\"\(escapedClean)\""
+                if let modelRange = result.range(of: modelField) {
+                    let afterModel = modelRange.upperBound
+                    // Find the comma after the model value
+                    let remaining = result[afterModel...]
+                    if let commaIdx = remaining.firstIndex(of: ",") {
+                        let insertPoint = result.index(after: commaIdx)
+                        result.insert(contentsOf: "\"thinking\":\(thinkingJson),", at: insertPoint)
+                    }
+                }
+
+                // Adjust max_tokens if needed
                 let tokenHeadroom = max(Config.minimumHeadroom, Int(Double(effectiveBudget) * Config.headroomRatio))
                 let desiredMaxTokens = effectiveBudget + tokenHeadroom
-                var requiredMaxTokens = min(desiredMaxTokens, Config.hardTokenCap)
+                var requiredMaxTokens = min(desiredMaxTokens, modelCap)
                 if requiredMaxTokens <= effectiveBudget {
-                    requiredMaxTokens = min(effectiveBudget + 1, Config.hardTokenCap)
+                    requiredMaxTokens = min(effectiveBudget + 1, modelCap)
                 }
-                
-                let hasMaxOutputTokensField = json.keys.contains("max_output_tokens")
-                var adjusted = false
-                
-                if let currentMaxTokens = json["max_tokens"] as? Int {
-                    if currentMaxTokens <= effectiveBudget {
-                        json["max_tokens"] = requiredMaxTokens
-                    }
-                    adjusted = true
+
+                // Surgically update max_tokens or max_output_tokens if they're too low
+                result = adjustMaxTokens(in: result, field: "max_tokens", minimum: requiredMaxTokens, budget: effectiveBudget)
+                result = adjustMaxTokens(in: result, field: "max_output_tokens", minimum: requiredMaxTokens, budget: effectiveBudget)
+
+                if let effort = effortLevel {
+                    NSLog("[ThinkingProxy] Effort level '\(effort)' noted for model '\(cleanModel)'")
                 }
-                
-                if let currentMaxOutputTokens = json["max_output_tokens"] as? Int {
-                    if currentMaxOutputTokens <= effectiveBudget {
-                        json["max_output_tokens"] = requiredMaxTokens
-                    }
-                    adjusted = true
-                }
-                
-                if !adjusted {
-                    if hasMaxOutputTokensField {
-                        json["max_output_tokens"] = requiredMaxTokens
-                    } else {
-                        json["max_tokens"] = requiredMaxTokens
-                    }
-                }
-                
-                NSLog("[ThinkingProxy] Transformed model '\(model)' → '\(cleanModel)' with thinking budget \(effectiveBudget)")
+
+                NSLog("[ThinkingProxy] Transformed model '\(model)' → '\(cleanModel)' with thinking budget \(effectiveBudget)\(effortLevel.map { ", effort: \($0)" } ?? "")")
             } else {
-                // Invalid number - just strip suffix and use vanilla model
                 NSLog("[ThinkingProxy] Stripped invalid thinking suffix from '\(model)' → '\(cleanModel)' (no thinking)")
             }
-            
-            // Convert back to JSON
-            if let modifiedData = try? JSONSerialization.data(withJSONObject: json),
-               let modifiedString = String(data: modifiedData, encoding: .utf8) {
-                return (modifiedString, true)
-            }
+
+            return (result, true)
         } else if model.hasSuffix("-thinking") || model.contains("-thinking(") {
-            // Model ends with -thinking or uses -thinking(budget) syntax (e.g. gemini-claude-opus-4-5-thinking, gemini-claude-opus-4-5-thinking(32768))
-            // Enable beta header but don't modify body - let backend handle thinking budget
             NSLog("[ThinkingProxy] Detected thinking model '\(model)' - enabling beta header, passing through to backend")
             return (jsonString, true)
         }
-        
+
         return (jsonString, false)  // No transformation needed
+    }
+
+    /// Surgically adjust a numeric JSON field value if it's too low, preserving all other content
+    private func adjustMaxTokens(in jsonString: String, field: String, minimum: Int, budget: Int) -> String {
+        // Match "field_name": NUMBER pattern
+        let pattern = "\"\(field)\"\\s*:\\s*(\\d+)"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: jsonString, range: NSRange(jsonString.startIndex..., in: jsonString)),
+              let valueRange = Range(match.range(at: 1), in: jsonString),
+              let currentValue = Int(jsonString[valueRange]),
+              currentValue <= budget else {
+            return jsonString
+        }
+        var result = jsonString
+        result.replaceSubrange(valueRange, with: String(minimum))
+        return result
     }
     
     /**
