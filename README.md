@@ -27,6 +27,10 @@ All releases are code-signed and notarized by Apple. Existing installs auto-upda
 
 See [SETUP.md](SETUP.md) for authentication and Factory configuration instructions.
 
+<p align="center">
+  <img src="settings-screenshot.png" alt="DroidProxy Settings" width="420">
+</p>
+
 ## Requirements
 
 - macOS 13.0+ (Ventura or later)
