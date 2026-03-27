@@ -17,8 +17,8 @@ import Network
  */
 class ThinkingProxy {
     private var listener: NWListener?
-    let proxyPort: UInt16 = 8317
-    private let targetPort: UInt16 = 8318
+    private(set) var proxyPort: UInt16
+    private(set) var targetPort: UInt16
     private let targetHost = "127.0.0.1"
     private(set) var isRunning = false
     private let stateQueue = DispatchQueue(label: "io.automaze.droidproxy.thinking-proxy-state")
@@ -148,9 +148,22 @@ class ThinkingProxy {
             isAdaptiveModel(model) ? extendedHardTokenCap : defaultHardTokenCap
         }
     }
+
+    init(
+        proxyPort: UInt16 = UInt16(AppPreferences.proxyPort),
+        targetPort: UInt16 = UInt16(AppPreferences.backendPort)
+    ) {
+        self.proxyPort = proxyPort
+        self.targetPort = targetPort
+    }
+
+    func updatePorts(proxyPort: UInt16, targetPort: UInt16) {
+        self.proxyPort = proxyPort
+        self.targetPort = targetPort
+    }
     
     /**
-     Starts the thinking proxy server on port 8317
+     Starts the thinking proxy server on the configured proxy port
      */
     func start() {
         guard !isRunning else {
@@ -701,7 +714,7 @@ class ThinkingProxy {
     }
     
     /**
-     Forwards the request to CLIProxyAPI on port 8318 (pass-through for non-thinking requests)
+     Forwards the request to CLIProxyAPI on the configured backend port
      */
     private func forwardRequest(method: String, path: String, version: String, headers: [(String, String)], body: String, thinkingEnabled: Bool = false, originalConnection: NWConnection, retryWithApiPrefix: Bool = false) {
         // Create connection to CLIProxyAPI

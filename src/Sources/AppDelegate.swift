@@ -24,8 +24,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         setupMenuBar()
 
         // Initialize managers
-        serverManager = ServerManager()
-        thinkingProxy = ThinkingProxy()
+        serverManager = ServerManager(
+            proxyPort: AppPreferences.proxyPort,
+            backendPort: AppPreferences.backendPort
+        )
+        thinkingProxy = ThinkingProxy(
+            proxyPort: UInt16(AppPreferences.proxyPort),
+            targetPort: UInt16(AppPreferences.backendPort)
+        )
 
         // Warm commonly used icons to avoid first-use disk hits
         preloadIcons()
@@ -187,7 +193,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         window.isReleasedWhenClosed = false
         window.backgroundColor = .black
 
-        let contentView = SettingsView(serverManager: serverManager)
+        let contentView = SettingsView(serverManager: serverManager, thinkingProxy: thinkingProxy)
         window.contentView = NSHostingView(rootView: contentView)
 
         settingsWindow = window
@@ -208,7 +214,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
     }
 
     func startServer() {
-        // Start the thinking proxy first (port 8317)
+        // Start the thinking proxy first
         thinkingProxy.start()
         
         // Poll for thinking proxy readiness with timeout
@@ -223,12 +229,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
                 DispatchQueue.main.async {
                     if success {
                         self?.updateMenuBarStatus()
-                        // User always connects to 8317 (thinking proxy)
+                        // User always connects to the configured thinking proxy port
                         self?.showNotification(title: "Server Started", body: "DroidProxy is now running")
                     } else {
                         // Backend failed - stop the proxy to keep state consistent
                         self?.thinkingProxy.stop()
-                        self?.showNotification(title: "Server Failed", body: "Could not start backend server on port 8318")
+                        self?.showNotification(title: "Server Failed", body: "Could not start backend server on port \(self?.serverManager.backendPort ?? AppPreferences.backendPort)")
                     }
                 }
             }
@@ -240,7 +246,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             DispatchQueue.main.async { [weak self] in
                 // Clean up partially initialized proxy
                 self?.thinkingProxy.stop()
-                self?.showNotification(title: "Server Failed", body: "Could not start thinking proxy on port 8317 (timeout)")
+                self?.showNotification(title: "Server Failed", body: "Could not start thinking proxy on port \(self?.thinkingProxy.proxyPort ?? UInt16(AppPreferences.proxyPort)) (timeout)")
             }
             return
         }
@@ -270,7 +276,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
     }
 
     @objc func openDashboard() {
-        if let url = URL(string: "http://localhost:8318/management.html") {
+        if let url = URL(string: "http://localhost:\(serverManager.backendPort)/management.html") {
             NSWorkspace.shared.open(url)
         }
     }

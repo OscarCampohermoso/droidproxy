@@ -215,9 +215,12 @@ struct ServiceRow<ExtraContent: View>: View {
 
 struct SettingsView: View {
     @ObservedObject var serverManager: ServerManager
+    let thinkingProxy: ThinkingProxy
     @StateObject private var authManager = AuthManager()
     @State private var launchAtLogin = false
     @AppStorage(AppPreferences.forceMaxOpus46EffortKey) private var forceMaxOpus46Effort = AppPreferences.defaultForceMaxOpus46Effort
+    @AppStorage(AppPreferences.proxyPortKey) private var storedProxyPort = AppPreferences.defaultProxyPort
+    @AppStorage(AppPreferences.backendPortKey) private var storedBackendPort = AppPreferences.defaultBackendPort
     @State private var authenticatingService: ServiceType? = nil
     @State private var showingAuthResult = false
     @State private var authResultMessage = ""
@@ -225,6 +228,8 @@ struct SettingsView: View {
     @State private var fileMonitor: DispatchSourceFileSystemObject?
     @State private var pendingRefresh: DispatchWorkItem?
     @State private var expandedRowCount = 0
+    @State private var proxyPortInput = "\(AppPreferences.proxyPort)"
+    @State private var backendPortInput = "\(AppPreferences.backendPort)"
     
     private enum Timing {
         static let serverRestartDelay: TimeInterval = 0.3
@@ -283,6 +288,47 @@ struct SettingsView: View {
                             openAuthFolder()
                         }
                     }
+                }
+
+                Section("Ports") {
+                    HStack {
+                        Text("Proxy port")
+                        Spacer()
+                        TextField("8417", text: $proxyPortInput)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 72)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    HStack {
+                        Text("Backend port")
+                        Spacer()
+                        TextField("8418", text: $backendPortInput)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 72)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    HStack {
+                        Text("Base URL")
+                        Spacer()
+                        Text("http://localhost:\(storedProxyPort)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    HStack {
+                        Button("Apply Ports") {
+                            applyPortChanges()
+                        }
+
+                        Button("Reset Defaults") {
+                            proxyPortInput = "\(AppPreferences.defaultProxyPort)"
+                            backendPortInput = "\(AppPreferences.defaultBackendPort)"
+                            applyPortChanges()
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 Section("Services") {
@@ -383,6 +429,45 @@ struct SettingsView: View {
     private func openAuthFolder() {
         let authDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cli-proxy-api")
         NSWorkspace.shared.open(authDir)
+    }
+
+    private func applyPortChanges() {
+        guard let proxyPort = Int(proxyPortInput.trimmingCharacters(in: .whitespaces)),
+              let backendPort = Int(backendPortInput.trimmingCharacters(in: .whitespaces)),
+              AppPreferences.areValidPorts(proxyPort: proxyPort, backendPort: backendPort) else {
+            authResultSuccess = false
+            authResultMessage = "Ports must be unique integers between 1024 and 65535."
+            showingAuthResult = true
+            return
+        }
+
+        let wasRunning = serverManager.isRunning
+        let apply = {
+            AppPreferences.savePorts(proxyPort: proxyPort, backendPort: backendPort)
+            storedProxyPort = proxyPort
+            storedBackendPort = backendPort
+            serverManager.updatePorts(proxyPort: proxyPort, backendPort: backendPort)
+            thinkingProxy.updatePorts(proxyPort: UInt16(proxyPort), targetPort: UInt16(backendPort))
+            authResultSuccess = true
+            authResultMessage = wasRunning
+                ? "Ports updated to \(proxyPort)/\(backendPort). Restarting server with the new ports."
+                : "Ports updated to \(proxyPort)/\(backendPort)."
+            showingAuthResult = true
+
+            if wasRunning {
+                thinkingProxy.start()
+                serverManager.start { _ in }
+            }
+        }
+
+        if wasRunning {
+            thinkingProxy.stop()
+            serverManager.stop {
+                apply()
+            }
+        } else {
+            apply()
+        }
     }
 
     private func toggleLaunchAtLogin(_ enabled: Bool) {

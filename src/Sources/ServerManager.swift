@@ -47,7 +47,8 @@ private struct RingBuffer<Element> {
 class ServerManager: ObservableObject {
     private var process: Process?
     @Published private(set) var isRunning = false
-    private(set) var port = 8317
+    private(set) var proxyPort: Int
+    private(set) var backendPort: Int
 
     /// Provider enabled states - when disabled, models are excluded via oauth-excluded-models
     @Published var enabledProviders: [String: Bool] = [:] {
@@ -77,11 +78,18 @@ class ServerManager: ObservableObject {
         "claude": "claude"
     ]
 
-    init() {
+    init(proxyPort: Int = AppPreferences.proxyPort, backendPort: Int = AppPreferences.backendPort) {
+        self.proxyPort = proxyPort
+        self.backendPort = backendPort
         logBuffer = RingBuffer(capacity: maxLogLines)
         if let saved = UserDefaults.standard.dictionary(forKey: "enabledProviders") as? [String: Bool] {
             enabledProviders = saved
         }
+    }
+
+    func updatePorts(proxyPort: Int, backendPort: Int) {
+        self.proxyPort = proxyPort
+        self.backendPort = backendPort
     }
 
     /// Check if a provider is enabled (defaults to true if not set)
@@ -179,7 +187,7 @@ class ServerManager: ObservableObject {
             DispatchQueue.main.async {
                 self.isRunning = true
             }
-            addLog("✓ Server started on port \(port)")
+            addLog("✓ Backend server started on port \(backendPort)")
             
             // Wait a bit to ensure it started successfully
             DispatchQueue.main.asyncAfter(deadline: .now() + Timing.readinessCheckDelay) { [weak self] in
@@ -352,6 +360,13 @@ class ServerManager: ObservableObject {
         let bundledConfigPath = (resourcePath as NSString).appendingPathComponent("config.yaml")
         let authDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cli-proxy-api")
 
+        do {
+            try FileManager.default.createDirectory(at: authDir, withIntermediateDirectories: true)
+        } catch {
+            NSLog("[ServerManager] Failed to create auth directory: %@", error.localizedDescription)
+            return bundledConfigPath
+        }
+
         // Build list of disabled providers
         var disabledProviders: [String] = []
         for (serviceKey, oauthKey) in Self.oauthProviderKeys {
@@ -360,15 +375,16 @@ class ServerManager: ObservableObject {
             }
         }
 
-        guard !disabledProviders.isEmpty else {
-            return bundledConfigPath
-        }
-
         guard let bundledContent = try? String(contentsOfFile: bundledConfigPath, encoding: .utf8) else {
             return bundledConfigPath
         }
 
-        var additionalConfig = ""
+        var additionalConfig = """
+
+# Runtime overrides (auto-added by DroidProxy)
+port: \(backendPort)
+
+"""
 
         if !disabledProviders.isEmpty {
             additionalConfig += """

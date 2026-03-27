@@ -1,5 +1,5 @@
-# Server port (CLIProxyAPI runs on 8318, ThinkingProxy forwards from 8317)
-port: 8318
+# Default backend port (CLIProxyAPI runs on 8418, ThinkingProxy forwards from 8417)
+port: 8418
 
 # Bind to localhost only for security (prevents exposure on public IPs)
 host: 127.0.0.1

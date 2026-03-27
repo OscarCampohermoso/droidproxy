@@ -16,7 +16,7 @@ Open `~/.factory/settings.json` and add the following to the `customModels` arra
       "model": "claude-opus-4-6-thinking-128000",
       "id": "custom:CC:-Opus-4.6-(Max)-0",
       "index": 0,
-      "baseUrl": "http://localhost:8317",
+      "baseUrl": "http://localhost:8417",
       "apiKey": "dummy-not-used",
       "displayName": "CC: Opus 4.6 (Max)",
       "maxOutputTokens": 128000,
