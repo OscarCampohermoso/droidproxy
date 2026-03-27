@@ -338,7 +338,7 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
-                Link("Report an issue", destination: URL(string: "https://github.com/anand-92/droidproxy/issues")!)
+                Link("Report an issue", destination: URL(string: "https://github.com/OscarCampohermoso/droidproxy/issues")!)
                     .font(.caption)
                     .padding(.top, 6)
                     .onHover { inside in

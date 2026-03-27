@@ -69,7 +69,7 @@ Models containing `opus-4-6`, `opus-4-7`, `sonnet-4-6`, `sonnet-4-7` use adaptiv
 
 ## Release process
 
-Releases go to `github.com/anand-92/droidproxy`. The CI workflow (`.github/workflows/release.yml`) triggers on `v*` tags and handles build/sign/notarize/DMG/Sparkle signing/GitHub release automatically. For manual local releases:
+Releases go to `github.com/OscarCampohermoso/droidproxy`. The CI workflow (`.github/workflows/release.yml`) triggers on `v*` tags and handles build/sign/notarize/DMG/GitHub release automatically. For manual local releases:
 
 1. Build: `./create-app-bundle.sh`
 2. Notarize the .app

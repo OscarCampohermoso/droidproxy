@@ -23,10 +23,76 @@ class ThinkingProxy {
     private(set) var isRunning = false
     private let stateQueue = DispatchQueue(label: "io.automaze.droidproxy.thinking-proxy-state")
 
-    /// File-based debug logger (writes to /tmp/droidproxy-debug.log)
-    private static let logFile: URL = URL(fileURLWithPath: "/tmp/droidproxy-debug.log")
     private static let logQueue = DispatchQueue(label: "io.automaze.droidproxy.file-log")
+    private static let logFile: URL? = initializeLogFile()
+
+    private static func initializeLogFile() -> URL? {
+        let fileManager = FileManager.default
+        guard let libraryDirectory = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first else {
+            NSLog("[ThinkingProxy] Failed to resolve ~/Library for secure logging")
+            return nil
+        }
+
+        let logsDirectory = libraryDirectory.appendingPathComponent("Logs/DroidProxy", isDirectory: true)
+        do {
+            try fileManager.createDirectory(
+                at: logsDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+            )
+            try fileManager.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o700))],
+                ofItemAtPath: logsDirectory.path
+            )
+        } catch {
+            NSLog("[ThinkingProxy] Failed to prepare log directory %@: %@", logsDirectory.path, error.localizedDescription)
+            return nil
+        }
+
+        do {
+            let dirAttributes = try fileManager.attributesOfItem(atPath: logsDirectory.path)
+            if let type = dirAttributes[.type] as? FileAttributeType, type == .typeSymbolicLink {
+                NSLog("[ThinkingProxy] Refusing to log to symlinked directory: %@", logsDirectory.path)
+                return nil
+            }
+        } catch {
+            NSLog("[ThinkingProxy] Failed to inspect log directory %@: %@", logsDirectory.path, error.localizedDescription)
+            return nil
+        }
+
+        let logFile = logsDirectory.appendingPathComponent("debug.log", isDirectory: false)
+        if fileManager.fileExists(atPath: logFile.path) {
+            do {
+                let fileAttributes = try fileManager.attributesOfItem(atPath: logFile.path)
+                if let type = fileAttributes[.type] as? FileAttributeType, type == .typeSymbolicLink {
+                    NSLog("[ThinkingProxy] Refusing to log to symlinked file: %@", logFile.path)
+                    return nil
+                }
+                try fileManager.setAttributes(
+                    [.posixPermissions: NSNumber(value: Int16(0o600))],
+                    ofItemAtPath: logFile.path
+                )
+            } catch {
+                NSLog("[ThinkingProxy] Failed to secure log file %@: %@", logFile.path, error.localizedDescription)
+                return nil
+            }
+        } else {
+            let created = fileManager.createFile(
+                atPath: logFile.path,
+                contents: Data(),
+                attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
+            )
+            guard created else {
+                NSLog("[ThinkingProxy] Failed to create log file at %@", logFile.path)
+                return nil
+            }
+        }
+
+        return logFile
+    }
+
     static func fileLog(_ message: String) {
+        guard let logFile else { return }
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "[\(timestamp)] \(message)\n"
         logQueue.async {
@@ -36,7 +102,15 @@ class ThinkingProxy {
                     handle.write(data)
                     handle.closeFile()
                 } else {
-                    try? data.write(to: logFile)
+                    let created = FileManager.default.createFile(
+                        atPath: logFile.path,
+                        contents: Data(),
+                        attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
+                    )
+                    guard created, let handle = try? FileHandle(forWritingTo: logFile) else { return }
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
                 }
             }
         }
@@ -314,15 +388,11 @@ class ThinkingProxy {
 
     /**
      Processes the JSON body to add thinking parameter if model name has a thinking suffix.
-     Uses surgical string operations to preserve original JSON structure and key ordering,
-     which is critical for Anthropic's prompt caching (cache_control fields must be preserved).
      Returns tuple of (modifiedJSON, needsTransformation)
      */
     private func processThinkingParameter(jsonString: String) -> (String, Bool)? {
-        // Parse JSON only to read values — we'll do surgical string replacements to preserve key order
-        // (JSONSerialization.data reorders keys, which breaks Anthropic's prompt cache matching)
         guard let jsonData = jsonString.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              var json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
               let model = json["model"] as? String else {
             return nil
         }
@@ -358,15 +428,8 @@ class ThinkingProxy {
             }
 
             // Determine clean model name
-            let cleanModel: String
-            if model.starts(with: "gemini-claude-") {
-                cleanModel = String(model[..<thinkingRange.upperBound].dropLast(1))
-            } else {
-                cleanModel = String(model[..<thinkingRange.lowerBound])
-            }
-
-            // Surgical string replacement: swap model name preserving JSON structure
-            var result = jsonString.replacingOccurrences(of: "\"\(model)\"", with: "\"\(cleanModel)\"")
+            let cleanModel = String(model[..<thinkingRange.lowerBound])
+            json["model"] = cleanModel
 
             if let budget = Int(budgetString), budget > 0 {
                 let modelCap = Config.hardTokenCap(for: cleanModel)
@@ -375,28 +438,22 @@ class ThinkingProxy {
                     NSLog("[ThinkingProxy] Adjusted thinking budget from \(budget) to \(effectiveBudget) (cap: \(modelCap))")
                 }
 
-                // Build thinking parameter JSON
                 let isAdaptiveModel = Config.isAdaptiveModel(cleanModel)
-                let thinkingJson: String
                 if isAdaptiveModel {
-                    thinkingJson = "{\"type\":\"adaptive\"}"
+                    json["thinking"] = ["type": "adaptive"]
                     NSLog("[ThinkingProxy] Using adaptive thinking for model '\(cleanModel)' (budget \(effectiveBudget) used as max_tokens floor)")
                 } else {
-                    thinkingJson = "{\"type\":\"enabled\",\"budget_tokens\":\(effectiveBudget)}"
+                    json["thinking"] = ["type": "enabled", "budget_tokens": effectiveBudget]
                 }
 
-                // Inject thinking field after model field
-                result = injectJSONField(in: result, afterKey: "model", fieldName: "thinking", fieldValue: thinkingJson)
-
-                // For adaptive models, inject output_config.effort
                 if isAdaptiveModel {
                     let effort = effortLevel ?? Config.defaultAdaptiveEffort(for: cleanModel)
-                    result = injectJSONField(in: result, afterKey: "thinking", fieldName: "output_config",
-                                             fieldValue: "{\"effort\":\"\(effort)\"}")
+                    var outputConfig = json["output_config"] as? [String: Any] ?? [:]
+                    outputConfig["effort"] = effort
+                    json["output_config"] = outputConfig
                     ThinkingProxy.fileLog("INJECTED effort: \(effort) for model \(cleanModel)")
                 }
 
-                // Ensure max token limits exceed the thinking budget
                 let tokenHeadroom = max(Config.minimumHeadroom, Int(Double(effectiveBudget) * Config.headroomRatio))
                 let desiredMaxTokens = effectiveBudget + tokenHeadroom
                 var requiredMaxTokens = min(desiredMaxTokens, modelCap)
@@ -404,17 +461,32 @@ class ThinkingProxy {
                     requiredMaxTokens = min(effectiveBudget + 1, modelCap)
                 }
 
-                result = replaceJSONIntField(in: result, key: "max_tokens",
-                                             oldValue: json["max_tokens"] as? Int, minimum: requiredMaxTokens, budget: effectiveBudget)
-                result = replaceJSONIntField(in: result, key: "max_output_tokens",
-                                             oldValue: json["max_output_tokens"] as? Int, minimum: requiredMaxTokens, budget: effectiveBudget)
+                ensureMinimumTokenField(
+                    in: &json,
+                    key: "max_tokens",
+                    minimum: requiredMaxTokens,
+                    budget: effectiveBudget
+                )
+                ensureMinimumTokenField(
+                    in: &json,
+                    key: "max_output_tokens",
+                    minimum: requiredMaxTokens,
+                    budget: effectiveBudget
+                )
 
                 NSLog("[ThinkingProxy] Transformed '\(model)' → '\(cleanModel)' with budget \(effectiveBudget)\(effortLevel.map { ", effort: \($0)" } ?? "")")
             } else {
                 NSLog("[ThinkingProxy] Stripped invalid thinking suffix from '\(model)' → '\(cleanModel)' (no thinking)")
             }
 
-            return (result, true)
+            guard JSONSerialization.isValidJSONObject(json),
+                  let encodedData = try? JSONSerialization.data(withJSONObject: json),
+                  let encodedString = String(data: encodedData, encoding: .utf8) else {
+                NSLog("[ThinkingProxy] Failed to serialize modified request body for model %@", model)
+                return nil
+            }
+
+            return (encodedString, true)
         } else if model.hasSuffix("-thinking") || model.contains("-thinking(") {
             NSLog("[ThinkingProxy] Detected thinking model '\(model)' - enabling beta header, passing through to backend")
             return (jsonString, true)
@@ -423,37 +495,24 @@ class ThinkingProxy {
         return (jsonString, false)  // No transformation needed
     }
 
-    // MARK: - Surgical JSON string helpers
-    // These use regex to modify specific fields in-place, preserving the original JSON structure
-    // and key ordering. This is critical because JSONSerialization.data() reorders keys
-    // alphabetically, which breaks Anthropic's prompt cache matching.
-
-    /// Injects a new JSON field after a given key's value in the JSON string.
-    private func injectJSONField(in json: String, afterKey: String, fieldName: String, fieldValue: String) -> String {
-        let escapedKey = NSRegularExpression.escapedPattern(for: afterKey)
-        let valuePattern = "(?:\"(?:[^\"\\\\]|\\\\.)*\"|\\-?\\d+(?:\\.\\d+)?|\\{[^}]*\\}|\\[[^\\]]*\\]|true|false|null)"
-        let pattern = "\"\(escapedKey)\"\\s*:\\s*\(valuePattern)"
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: json, range: NSRange(json.startIndex..., in: json)) else {
-            NSLog("[ThinkingProxy] Warning: Could not find key '\(afterKey)' for field injection")
-            return json
+    private func ensureMinimumTokenField(in json: inout [String: Any], key: String, minimum: Int, budget: Int) {
+        guard let currentValue = jsonIntValue(json[key]), currentValue <= budget else {
+            return
         }
-        let insertOffset = match.range.location + match.range.length
-        let insertIndex = json.index(json.startIndex, offsetBy: insertOffset)
-        var result = json
-        result.insert(contentsOf: ",\"\(fieldName)\":\(fieldValue)", at: insertIndex)
-        return result
+        json[key] = minimum
     }
 
-    /// Replaces a numeric JSON field value in-place if it's below the required minimum.
-    private func replaceJSONIntField(in json: String, key: String, oldValue: Int?, minimum: Int, budget: Int) -> String {
-        guard let current = oldValue, current <= budget else { return json }
-        let escapedKey = NSRegularExpression.escapedPattern(for: key)
-        let pattern = "\"\(escapedKey)\"(\\s*:\\s*)\(current)\\b"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return json }
-        let range = NSRange(json.startIndex..., in: json)
-        return regex.stringByReplacingMatches(in: json, range: range,
-                                              withTemplate: "\"\(key)\"$1\(minimum)")
+    private func jsonIntValue(_ value: Any?) -> Int? {
+        if let intValue = value as? Int {
+            return intValue
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        if let stringValue = value as? String {
+            return Int(stringValue)
+        }
+        return nil
     }
     
     /**

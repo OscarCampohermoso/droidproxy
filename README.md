@@ -8,19 +8,18 @@ A native macOS menu bar app that proxies Claude Code authentication for use with
 
 ## Download
 
-Grab the latest release from [Releases](https://github.com/anand-92/droidproxy/releases/latest):
+Grab the latest release from [Releases](https://github.com/OscarCampohermoso/droidproxy/releases/latest):
 
 - **DroidProxy-arm64.dmg** -- Apple Silicon (M1/M2/M3/M4)
 - **DroidProxy-arm64.zip** -- ZIP alternative
 
-All releases are code-signed and notarized by Apple. Existing installs auto-update via Sparkle.
+All releases are code-signed and notarized by Apple.
 
 ## Features
 
 - **One-click Claude Code auth** -- OAuth login from the menu bar, credential monitoring, auto-refresh
 - **Extended thinking proxy** -- Injects `thinking` parameters into Anthropic API calls so you can use `-thinking-N` model suffixes (e.g. `claude-opus-4-6-thinking-128000`)
 - **Opus 4.6 / Sonnet 4.6 support** -- Adaptive thinking with configurable effort (`auto` or `max`), 128K output cap, interleaved thinking
-- **Sparkle auto-updates** -- Checks daily, installs in the background
 - **Factory integration** -- Drop-in custom model config for Factory Droids
 
 ## Setup

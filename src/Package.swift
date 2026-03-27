@@ -12,13 +12,11 @@ let package = Package(
             targets: ["CLIProxyMenuBar"]
         )
     ],
-    dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.5.0")
-    ],
+    dependencies: [],
     targets: [
         .executableTarget(
             name: "CLIProxyMenuBar",
-            dependencies: ["Sparkle"],
+            dependencies: [],
             path: "Sources",
             resources: [
                 .copy("Resources")

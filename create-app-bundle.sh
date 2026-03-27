@@ -41,7 +41,7 @@ echo -e "${BLUE}Copying executable...${NC}"
 cp "$BUILD_DIR/CLIProxyMenuBar" "$APP_DIR/Contents/MacOS/"
 chmod +x "$APP_DIR/Contents/MacOS/CLIProxyMenuBar"
 
-# Add rpath for Frameworks directory (needed for Sparkle)
+# Add rpath for Frameworks directory (for embedded frameworks, if any)
 install_name_tool -add_rpath "@loader_path/../Frameworks" "$APP_DIR/Contents/MacOS/CLIProxyMenuBar" 2>/dev/null || true
 
 # Copy resources (copy contents, not the folder itself)
@@ -81,16 +81,6 @@ if [ -f "$SRC_DIR/Sources/Resources/AppIcon.icns" ]; then
     cp "$SRC_DIR/Sources/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/"
 fi
 
-# Copy Sparkle.framework
-echo -e "${BLUE}Copying Sparkle.framework...${NC}"
-SPARKLE_FRAMEWORK="$BUILD_DIR/Sparkle.framework"
-if [ -d "$SPARKLE_FRAMEWORK" ]; then
-    cp -R "$SPARKLE_FRAMEWORK" "$APP_DIR/Contents/Frameworks/"
-    echo -e "${GREEN}✅ Sparkle.framework bundled${NC}"
-else
-    echo -e "${YELLOW}⚠️ Sparkle.framework not found at $SPARKLE_FRAMEWORK${NC}"
-fi
-
 # Copy Info.plist and inject version
 echo -e "${BLUE}Copying Info.plist...${NC}"
 cp "$SRC_DIR/Info.plist" "$APP_DIR/Contents/"
@@ -112,14 +102,6 @@ echo -e "${BLUE}Setting version to: ${VERSION} (build ${BUILD_NUMBER})${NC}"
 # Update Info.plist with version
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "$APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER}" "$APP_DIR/Contents/Info.plist"
-
-# Update SUFeedURL based on architecture (for Sparkle auto-updates)
-TARGET_ARCH="${TARGET_ARCH:-arm64}"
-if [ "$TARGET_ARCH" = "x86_64" ]; then
-    APPCAST_URL="https://raw.githubusercontent.com/automazeio/vibeproxy/main/appcast-x86_64.xml"
-    echo -e "${BLUE}Setting Sparkle feed URL for Intel: ${APPCAST_URL}${NC}"
-    /usr/libexec/PlistBuddy -c "Set :SUFeedURL ${APPCAST_URL}" "$APP_DIR/Contents/Info.plist"
-fi
 
 # Create PkgInfo
 echo -e "${BLUE}Creating PkgInfo...${NC}"
@@ -155,34 +137,6 @@ if [ -n "$CODESIGN_IDENTITY" ]; then
                 "$APP_DIR/Contents/Resources/cli-proxy-api-plus"
         fi
         echo -e "${GREEN}✅ cli-proxy-api-plus signed${NC}"
-    fi
-    
-    # Sign Sparkle.framework (required for notarization)
-    if [ -d "$APP_DIR/Contents/Frameworks/Sparkle.framework" ]; then
-        echo -e "${BLUE}Signing Sparkle.framework...${NC}"
-        SPARKLE_FW="$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/B"
-        SPARKLE_ENTITLEMENTS="$PROJECT_DIR/sparkle-entitlements.plist"
-        
-        # Sign XPC services with entitlements (deepest nested)
-        for xpc in "$SPARKLE_FW/XPCServices"/*.xpc; do
-            if [ -d "$xpc" ]; then
-                codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp \
-                    --entitlements "$SPARKLE_ENTITLEMENTS" "$xpc"
-            fi
-        done
-        
-        # Sign Autoupdate with entitlements
-        codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp \
-            --entitlements "$SPARKLE_ENTITLEMENTS" "$SPARKLE_FW/Autoupdate"
-        
-        # Sign Updater.app with entitlements
-        codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp \
-            --entitlements "$SPARKLE_ENTITLEMENTS" "$SPARKLE_FW/Updater.app"
-        
-        # Sign the framework itself
-        codesign --force --sign "$CODESIGN_IDENTITY" --options runtime --timestamp \
-            "$APP_DIR/Contents/Frameworks/Sparkle.framework"
-        echo -e "${GREEN}✅ Sparkle.framework signed${NC}"
     fi
     
     # Sign the main executable with hardened runtime
