@@ -350,6 +350,19 @@ class ServerManager: ObservableObject {
             self.onLogUpdate?(self.logBuffer.elements())
         }
     }
+
+    private func bundledBinaryPath() -> String? {
+        guard let resourcePath = Bundle.main.resourcePath else {
+            return nil
+        }
+        return (resourcePath as NSString).appendingPathComponent("cli-proxy-api-plus")
+    }
+
+    private func runtimeConfigFilename() -> String {
+        let identifier = Bundle.main.bundleIdentifier ?? "droidproxy"
+        let safeIdentifier = identifier.replacingOccurrences(of: "/", with: "-")
+        return "merged-config-\(safeIdentifier).yaml"
+    }
     
     /// Returns the config path to use, merging bundled config with provider exclusions
     func getConfigPath() -> String {
@@ -379,12 +392,14 @@ class ServerManager: ObservableObject {
             return bundledConfigPath
         }
 
-        var additionalConfig = """
+        var mergedBaseContent = bundledContent
+        if let portLineRange = mergedBaseContent.range(of: #"(?m)^port:\s*.*$"#, options: .regularExpression) {
+            mergedBaseContent.replaceSubrange(portLineRange, with: "port: \(backendPort)")
+        } else {
+            mergedBaseContent += "\nport: \(backendPort)\n"
+        }
 
-# Runtime overrides (auto-added by DroidProxy)
-port: \(backendPort)
-
-"""
+        var additionalConfig = ""
 
         if !disabledProviders.isEmpty {
             additionalConfig += """
@@ -399,8 +414,8 @@ oauth-excluded-models:
             }
         }
 
-        let mergedContent = bundledContent + additionalConfig
-        let mergedConfigPath = authDir.appendingPathComponent("merged-config.yaml")
+        let mergedContent = mergedBaseContent + additionalConfig
+        let mergedConfigPath = authDir.appendingPathComponent(runtimeConfigFilename())
         
         do {
             try mergedContent.write(to: mergedConfigPath, atomically: true, encoding: .utf8)
@@ -416,12 +431,14 @@ oauth-excluded-models:
         return logBuffer.elements()
     }
     
-    /// Kill any orphaned cli-proxy-api-plus processes that might be running
+    /// Kill orphaned backend processes for this app only.
     private func killOrphanedProcesses() {
+        guard let bundledPath = bundledBinaryPath() else { return }
+
         // First check if any processes exist using pgrep
         let checkTask = Process()
         checkTask.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        checkTask.arguments = ["-f", "cli-proxy-api-plus"]
+        checkTask.arguments = ["-f", bundledPath]
         
         let outputPipe = Pipe()
         checkTask.standardOutput = outputPipe
@@ -443,7 +460,7 @@ oauth-excluded-models:
                     // Now kill them
                     let killTask = Process()
                     killTask.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-                    killTask.arguments = ["-9", "-f", "cli-proxy-api-plus"]
+                    killTask.arguments = ["-9", "-f", bundledPath]
                     
                     try killTask.run()
                     killTask.waitUntilExit()
