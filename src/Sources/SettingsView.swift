@@ -648,7 +648,7 @@ struct SettingsView: View {
         let droidIds = Set(Self.droidProxyModels.compactMap { $0["id"] as? String })
         models.removeAll { item in
             guard let id = item["id"] as? String else { return false }
-            return droidIds.contains(id)
+            return droidIds.contains(id) || id.hasPrefix("custom:CC:")
         }
 
         let startIndex = models.count
