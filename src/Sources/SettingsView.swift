@@ -230,6 +230,7 @@ struct SettingsView: View {
     @State private var fileMonitor: DispatchSourceFileSystemObject?
     @State private var pendingRefresh: DispatchWorkItem?
     @State private var expandedRowCount = 0
+    @State private var factoryModelsInstalled = false
     private let claudeEffortSelectionColor = Color(red: 0xD9/255, green: 0x77/255, blue: 0x57/255)
     private let codexEffortSelectionColor = Color(red: 0x74/255, green: 0xAA/255, blue: 0x9C/255)
     private let oledWindowBackground = Color.black
@@ -317,6 +318,24 @@ struct SettingsView: View {
                         Spacer()
                         Button("Open Folder") {
                             openAuthFolder()
+                        }
+                    }
+
+                    HStack {
+                        Text("Factory custom models")
+                        Spacer()
+                        if factoryModelsInstalled {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                    .font(.caption)
+                                Text("Applied")
+                                    .font(.caption)
+                                    .foregroundColor(.green)
+                            }
+                        }
+                        Button(factoryModelsInstalled ? "Re-apply" : "Apply") {
+                            applyFactoryCustomModels()
                         }
                     }
                 }
@@ -413,6 +432,7 @@ struct SettingsView: View {
             authManager.checkAuthStatus()
             checkLaunchAtLogin()
             startMonitoringAuthDirectory()
+            factoryModelsInstalled = checkFactoryModelsInstalled()
         }
         .onDisappear {
             stopMonitoringAuthDirectory()
@@ -548,6 +568,113 @@ struct SettingsView: View {
         }
     }
     
+    // MARK: - Factory Custom Models
+
+    private static let droidProxyModels: [[String: Any]] = [
+        [
+            "model": "claude-opus-4-6",
+            "id": "custom:droidproxy:opus-4-6",
+            "baseUrl": "http://localhost:8317",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: Opus 4.6",
+            "maxOutputTokens": 128000,
+            "noImageSupport": false,
+            "provider": "anthropic"
+        ],
+        [
+            "model": "claude-sonnet-4-6",
+            "id": "custom:droidproxy:sonnet-4-6",
+            "baseUrl": "http://localhost:8317",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: Sonnet 4.6",
+            "maxOutputTokens": 64000,
+            "noImageSupport": false,
+            "provider": "anthropic"
+        ],
+        [
+            "model": "gpt-5.3-codex",
+            "id": "custom:droidproxy:gpt-5.3-codex",
+            "baseUrl": "http://localhost:8317/v1",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: GPT 5.3 Codex",
+            "maxOutputTokens": 128000,
+            "noImageSupport": false,
+            "provider": "openai"
+        ],
+        [
+            "model": "gpt-5.4",
+            "id": "custom:droidproxy:gpt-5.4",
+            "baseUrl": "http://localhost:8317/v1",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: GPT 5.4",
+            "maxOutputTokens": 128000,
+            "noImageSupport": false,
+            "provider": "openai"
+        ]
+    ]
+
+    private func factorySettingsURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".factory")
+            .appendingPathComponent("settings.json")
+    }
+
+    private func checkFactoryModelsInstalled() -> Bool {
+        let url = factorySettingsURL()
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["customModels"] as? [[String: Any]] else {
+            return false
+        }
+        let existingIds = Set(models.compactMap { $0["id"] as? String })
+        let droidIds = Set(Self.droidProxyModels.compactMap { $0["id"] as? String })
+        return droidIds.isSubset(of: existingIds)
+    }
+
+    private func applyFactoryCustomModels() {
+        let url = factorySettingsURL()
+        let factoryDir = url.deletingLastPathComponent()
+
+        try? FileManager.default.createDirectory(at: factoryDir, withIntermediateDirectories: true)
+
+        var settings: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            settings = existing
+        }
+
+        var models = (settings["customModels"] as? [[String: Any]]) ?? []
+
+        let droidIds = Set(Self.droidProxyModels.compactMap { $0["id"] as? String })
+        models.removeAll { item in
+            guard let id = item["id"] as? String else { return false }
+            return droidIds.contains(id)
+        }
+
+        let startIndex = models.count
+        for (offset, var model) in Self.droidProxyModels.enumerated() {
+            model["index"] = startIndex + offset
+            models.append(model)
+        }
+
+        settings["customModels"] = models
+
+        do {
+            let data = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: url, options: .atomic)
+            factoryModelsInstalled = true
+            authResultSuccess = true
+            authResultMessage = "DroidProxy models added to Factory settings.\n\nRestart Factory (or open a new session) to see them in the model picker."
+            showingAuthResult = true
+            NSLog("[SettingsView] Factory custom models applied to %@", url.path)
+        } catch {
+            authResultSuccess = false
+            authResultMessage = "Failed to update Factory settings: \(error.localizedDescription)"
+            showingAuthResult = true
+            NSLog("[SettingsView] Failed to apply Factory custom models: %@", error.localizedDescription)
+        }
+    }
+
     // MARK: - File Monitoring
     
     private func startMonitoringAuthDirectory() {
