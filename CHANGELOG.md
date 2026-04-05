@@ -6,6 +6,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [1.8.50] - 2026-01-13
 
+## [Unreleased]
+
+### Added
+- **Gemini provider support** -- OAuth login, credential monitoring, provider enable/disable, and service icon in Settings UI
+- **Gemini thinking level controls** -- Per-model thinking level pickers for Gemini 3.1 Pro (`low` / `medium` / `high`) and Gemini 3 Flash (`minimal` / `low` / `medium` / `high`)
+- **Gemini Factory custom models** -- `gemini-3.1-pro-preview` and `gemini-3-flash-preview` added to one-click Factory model provisioning
+
 ## [1.8.121] - 2026-04-02
 
 ### Added

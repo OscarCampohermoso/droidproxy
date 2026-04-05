@@ -225,6 +225,8 @@ struct SettingsView: View {
     @AppStorage(AppPreferences.gpt54ReasoningEffortKey) private var gpt54ReasoningEffort = AppPreferences.defaultGpt54ReasoningEffort
     @AppStorage(AppPreferences.gpt53CodexFastModeKey) private var gpt53CodexFastMode = AppPreferences.defaultGpt53CodexFastMode
     @AppStorage(AppPreferences.gpt54FastModeKey) private var gpt54FastMode = AppPreferences.defaultGpt54FastMode
+    @AppStorage(AppPreferences.gemini31ProThinkingLevelKey) private var gemini31ProThinkingLevel = AppPreferences.defaultGemini31ProThinkingLevel
+    @AppStorage(AppPreferences.gemini3FlashThinkingLevelKey) private var gemini3FlashThinkingLevel = AppPreferences.defaultGemini3FlashThinkingLevel
     @State private var authenticatingService: ServiceType? = nil
     @State private var showingAuthResult = false
     @State private var authResultMessage = ""
@@ -233,8 +235,12 @@ struct SettingsView: View {
     @State private var pendingRefresh: DispatchWorkItem?
     @State private var expandedRowCount = 0
     @State private var factoryModelsInstalled = false
+    @State private var claudeModelsExpanded = true
+    @State private var codexModelsExpanded = true
+    @State private var geminiModelsExpanded = true
     private let claudeEffortSelectionColor = Color(red: 0xD9/255, green: 0x77/255, blue: 0x57/255)
     private let codexEffortSelectionColor = Color(red: 0x74/255, green: 0xAA/255, blue: 0x9C/255)
+    private let geminiEffortSelectionColor = Color(red: 0x42/255, green: 0x85/255, blue: 0xF4/255)
     private let oledWindowBackground = Color.black
     private let oledSectionBackground = Color(red: 0x12/255, green: 0x12/255, blue: 0x12/255)
     private let oledFooterText = Color(red: 0xA8/255, green: 0xA8/255, blue: 0xA8/255)
@@ -287,64 +293,6 @@ struct SettingsView: View {
                             toggleLaunchAtLogin(newValue)
                         }
 
-                    effortPickerRow(
-                        "Opus 4.6 thinking effort",
-                        selection: $opus46ThinkingEffort,
-                        options: ["low", "medium", "high", "max"],
-                        tint: claudeEffortSelectionColor
-                    )
-
-                    effortPickerRow(
-                        "Sonnet 4.6 thinking effort",
-                        selection: $sonnet46ThinkingEffort,
-                        options: ["low", "medium", "high"],
-                        tint: claudeEffortSelectionColor
-                    )
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("GPT 5.3 Codex reasoning effort")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Toggle("Fast mode", isOn: $gpt53CodexFastMode)
-                                .toggleStyle(.checkbox)
-                                .font(.caption)
-                                .help("Injects service_tier=priority for GPT 5.3 Codex Responses API requests (Codex fast mode)")
-                        }
-                        Picker("", selection: $gpt53CodexReasoningEffort) {
-                            ForEach(["low", "medium", "high", "xhigh"], id: \.self) { option in
-                                Text(option).tag(option)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .tint(codexEffortSelectionColor)
-                        .labelsHidden()
-                    }
-                    .padding(.vertical, 2)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("GPT 5.4 reasoning effort")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Toggle("Fast mode", isOn: $gpt54FastMode)
-                                .toggleStyle(.checkbox)
-                                .font(.caption)
-                                .help("Injects service_tier=priority for GPT 5.4 Responses API requests (Codex fast mode)")
-                        }
-                        Picker("", selection: $gpt54ReasoningEffort) {
-                            ForEach(["low", "medium", "high", "xhigh"], id: \.self) { option in
-                                Text(option).tag(option)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .tint(codexEffortSelectionColor)
-                        .labelsHidden()
-                    }
-                    .padding(.vertical, 2)
-
                     HStack {
                         Text("Auth files")
                         Spacer()
@@ -390,6 +338,41 @@ struct SettingsView: View {
                         onExpandChange: { expanded in expandedRowCount += expanded ? 1 : -1 }
                     ) { EmptyView() }
 
+                    if serverManager.isProviderEnabled("claude") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 4) {
+                                Text("Model Settings")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Image(systemName: claudeModelsExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    claudeModelsExpanded.toggle()
+                                }
+                            }
+                            if claudeModelsExpanded {
+                                effortPickerRow(
+                                    "Opus 4.6 thinking effort",
+                                    selection: $opus46ThinkingEffort,
+                                    options: ["low", "medium", "high", "max"],
+                                    tint: claudeEffortSelectionColor
+                                )
+                                effortPickerRow(
+                                    "Sonnet 4.6 thinking effort",
+                                    selection: $sonnet46ThinkingEffort,
+                                    options: ["low", "medium", "high"],
+                                    tint: claudeEffortSelectionColor
+                                )
+                            }
+                        }
+                        .padding(.leading, 28)
+                    }
+
                     ServiceRow(
                         serviceType: .codex,
                         iconName: "icon-codex.png",
@@ -405,13 +388,129 @@ struct SettingsView: View {
                         toggleTint: codexEffortSelectionColor,
                         onExpandChange: { expanded in expandedRowCount += expanded ? 1 : -1 }
                     ) { EmptyView() }
+
+                    if serverManager.isProviderEnabled("codex") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 4) {
+                                Text("Model Settings")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Image(systemName: codexModelsExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    codexModelsExpanded.toggle()
+                                }
+                            }
+                            if codexModelsExpanded {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text("GPT 5.3 Codex reasoning effort")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        Toggle("Fast mode", isOn: $gpt53CodexFastMode)
+                                            .toggleStyle(.checkbox)
+                                            .font(.caption)
+                                            .help("Injects service_tier=priority for GPT 5.3 Codex Responses API requests (Codex fast mode)")
+                                    }
+                                    Picker("", selection: $gpt53CodexReasoningEffort) {
+                                        ForEach(["low", "medium", "high", "xhigh"], id: \.self) { option in
+                                            Text(option).tag(option)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .tint(codexEffortSelectionColor)
+                                    .labelsHidden()
+                                }
+                                .padding(.vertical, 2)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text("GPT 5.4 reasoning effort")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        Toggle("Fast mode", isOn: $gpt54FastMode)
+                                            .toggleStyle(.checkbox)
+                                            .font(.caption)
+                                            .help("Injects service_tier=priority for GPT 5.4 Responses API requests (Codex fast mode)")
+                                    }
+                                    Picker("", selection: $gpt54ReasoningEffort) {
+                                        ForEach(["low", "medium", "high", "xhigh"], id: \.self) { option in
+                                            Text(option).tag(option)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .tint(codexEffortSelectionColor)
+                                    .labelsHidden()
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+                        .padding(.leading, 28)
+                    }
+
+                    ServiceRow(
+                        serviceType: .gemini,
+                        iconName: "icon-gemini.png",
+                        accounts: authManager.accounts(for: .gemini),
+                        isAuthenticating: authenticatingService == .gemini,
+                        helpText: "If you have multiple GCP projects, authentication will use your default project. Set your desired project as default in Google AI Studio before connecting.",
+                        isEnabled: serverManager.isProviderEnabled("gemini"),
+                        customTitle: nil,
+                        onConnect: { connectService(.gemini) },
+                        onDisconnect: { account in disconnectAccount(account) },
+                        onToggleDisabled: { account in toggleAccountDisabled(account) },
+                        onToggleEnabled: { enabled in serverManager.setProviderEnabled("gemini", enabled: enabled) },
+                        toggleTint: geminiEffortSelectionColor,
+                        onExpandChange: { expanded in expandedRowCount += expanded ? 1 : -1 }
+                    ) { EmptyView() }
+
+                    if serverManager.isProviderEnabled("gemini") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 4) {
+                                Text("Model Settings")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Image(systemName: geminiModelsExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    geminiModelsExpanded.toggle()
+                                }
+                            }
+                            if geminiModelsExpanded {
+                                effortPickerRow(
+                                    "Gemini 3.1 Pro thinking level",
+                                    selection: $gemini31ProThinkingLevel,
+                                    options: ["low", "medium", "high"],
+                                    tint: geminiEffortSelectionColor
+                                )
+                                effortPickerRow(
+                                    "Gemini 3 Flash thinking level",
+                                    selection: $gemini3FlashThinkingLevel,
+                                    options: ["minimal", "low", "medium", "high"],
+                                    tint: geminiEffortSelectionColor
+                                )
+                            }
+                        }
+                        .padding(.leading, 28)
+                    }
                 }
                 .listRowBackground(oledSectionBackground)
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
             .background(oledWindowBackground)
-            .scrollDisabled(expandedRowCount == 0)
+            .scrollDisabled(false)
 
             Spacer()
                 .frame(height: 6)
@@ -543,6 +642,7 @@ struct SettingsView: View {
         switch serviceType {
         case .claude: command = .claudeLogin
         case .codex: command = .codexLogin
+        case .gemini: command = .geminiLogin
         }
         
         serverManager.runAuthCommand(command) { success, output in
@@ -569,6 +669,8 @@ struct SettingsView: View {
             return "🌐 Browser opened for Claude Code authentication.\n\nPlease complete the login in your browser.\n\nThe app will automatically detect your credentials."
         case .codex:
             return "🌐 Browser opened for Codex authentication.\n\nPlease complete the login in your browser.\n\nThe app will automatically detect your credentials."
+        case .gemini:
+            return "🌐 Browser opened for Gemini authentication.\n\nPlease complete the login in your browser.\n\nNote: If you have multiple projects, the default project will be used."
         }
     }
     
@@ -642,6 +744,26 @@ struct SettingsView: View {
             "maxOutputTokens": 128000,
             "noImageSupport": false,
             "provider": "openai"
+        ],
+        [
+            "model": "gemini-3.1-pro-preview",
+            "id": "custom:droidproxy:gemini-3.1-pro",
+            "baseUrl": "http://localhost:8317/v1",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: Gemini 3.1 Pro",
+            "maxOutputTokens": 65536,
+            "noImageSupport": false,
+            "provider": "openai"
+        ],
+        [
+            "model": "gemini-3-flash-preview",
+            "id": "custom:droidproxy:gemini-3-flash",
+            "baseUrl": "http://localhost:8317/v1",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: Gemini 3 Flash",
+            "maxOutputTokens": 65536,
+            "noImageSupport": false,
+            "provider": "openai"
         ]
     ]
 
@@ -649,6 +771,14 @@ struct SettingsView: View {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".factory")
             .appendingPathComponent("settings.json")
+    }
+
+    private func providerKey(for model: [String: Any]) -> String? {
+        guard let name = model["model"] as? String else { return nil }
+        if name.hasPrefix("claude") { return "claude" }
+        if name.hasPrefix("gpt") { return "codex" }
+        if name.hasPrefix("gemini") { return "gemini" }
+        return nil
     }
 
     private func checkFactoryModelsInstalled() -> Bool {
@@ -659,8 +789,12 @@ struct SettingsView: View {
             return false
         }
         let existingIds = Set(models.compactMap { $0["id"] as? String })
-        let droidIds = Set(Self.droidProxyModels.compactMap { $0["id"] as? String })
-        return droidIds.isSubset(of: existingIds)
+        let enabledModels = Self.droidProxyModels.filter { model in
+            guard let key = providerKey(for: model) else { return true }
+            return serverManager.isProviderEnabled(key)
+        }
+        let droidIds = Set(enabledModels.compactMap { $0["id"] as? String })
+        return !droidIds.isEmpty && droidIds.isSubset(of: existingIds)
     }
 
     private func applyFactoryCustomModels() {
@@ -683,8 +817,12 @@ struct SettingsView: View {
             return droidIds.contains(id) || id.hasPrefix("custom:CC:")
         }
 
+        let enabledModels = Self.droidProxyModels.filter { model in
+            guard let key = providerKey(for: model) else { return true }
+            return serverManager.isProviderEnabled(key)
+        }
         let startIndex = models.count
-        for (offset, var model) in Self.droidProxyModels.enumerated() {
+        for (offset, var model) in enabledModels.enumerated() {
             model["index"] = startIndex + offset
             models.append(model)
         }

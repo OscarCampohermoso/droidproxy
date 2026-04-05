@@ -4,7 +4,7 @@
 
 1. Open DroidProxy from your Applications folder
 2. Click the menu bar icon and select "Open Settings"
-3. Click "Connect" next to Claude Code or Codex and complete the OAuth flow in your browser
+3. Click "Connect" next to Claude Code, Codex, or Gemini and complete the OAuth flow in your browser
 
 ## 2. Configure Factory
 
@@ -55,11 +55,33 @@ Open `~/.factory/settings.json` and add the following to the `customModels` arra
       "maxOutputTokens": 128000,
       "noImageSupport": false,
       "provider": "openai"
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "id": "custom:droidproxy:gemini-3.1-pro",
+      "index": 4,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "dummy-not-used",
+      "displayName": "DroidProxy: Gemini 3.1 Pro",
+      "maxOutputTokens": 65536,
+      "noImageSupport": false,
+      "provider": "openai"
+    },
+    {
+      "model": "gemini-3-flash-preview",
+      "id": "custom:droidproxy:gemini-3-flash",
+      "index": 5,
+      "baseUrl": "http://localhost:8317/v1",
+      "apiKey": "dummy-not-used",
+      "displayName": "DroidProxy: Gemini 3 Flash",
+      "maxOutputTokens": 65536,
+      "noImageSupport": false,
+      "provider": "openai"
     }
 ]
 ```
 
-Use the standard Claude and Codex model aliases in the `model` field. Claude entries use `provider: "anthropic"` with `http://localhost:8317`; GPT/Codex entries use `provider: "openai"` with `http://localhost:8317/v1`. DroidProxy applies Claude adaptive thinking and Codex reasoning effort based on the selected model and the thinking-effort setting in DroidProxy itself; it does not use `-thinking-*` model suffixes.
+Use the standard Claude and Codex model aliases in the `model` field. Claude entries use `provider: "anthropic"` with `http://localhost:8317`; GPT/Codex and Gemini entries use `provider: "openai"` with `http://localhost:8317/v1`. DroidProxy applies Claude adaptive thinking, Codex reasoning effort, and Gemini thinking levels based on the selected model and the effort/level setting in DroidProxy itself.
 
 ## 3. Configure Thinking Effort
 
@@ -69,6 +91,8 @@ Use the standard Claude and Codex model aliases in the `model` field. Claude ent
    - Sonnet 4.6: `low`, `medium`, or `high`
    - GPT 5.3 Codex: `low`, `medium`, `high`, or `xhigh`
    - GPT 5.4: `low`, `medium`, `high`, or `xhigh`
+   - Gemini 3.1 Pro: `low`, `medium`, or `high`
+   - Gemini 3 Flash: `minimal`, `low`, `medium`, or `high`
 
 ## 4. Enable Thinking Output
 

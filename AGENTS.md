@@ -55,7 +55,7 @@ Typical request flow:
 
 What it does today:
 
-- Inspects `POST` JSON requests for supported Claude and Codex GPT models
+- Inspects `POST` JSON requests for supported Claude, Codex GPT, and Gemini models
 - Injects Claude adaptive thinking for models whose name contains `opus-4-6` or `sonnet-4-6`
 - Injects `"thinking":{"type":"adaptive"}`
 - Injects `"output_config":{"effort":"..."}`
@@ -63,6 +63,9 @@ What it does today:
 - Injects Codex reasoning for exact models `gpt-5.3-codex` and `gpt-5.4`
 - Injects `"reasoning":{"effort":"..."}`
 - Reads effort from `AppPreferences.gpt53CodexReasoningEffort` or `AppPreferences.gpt54ReasoningEffort`
+- Injects Gemini thinking levels for `gemini-3.1-pro-preview` and `gemini-3-flash-preview`
+- Rewrites the model name to append a suffix (e.g. `gemini-3.1-pro-preview(high)`) which CLIProxyAPIPlus parses via its `ParseSuffix` logic
+- Reads level from `AppPreferences.gemini31ProThinkingLevel` or `AppPreferences.gemini3FlashThinkingLevel`
 - Optionally injects `"service_tier":"priority"` for `gpt-5.4` on Responses API paths (`/v1/responses`, `/api/v1/responses`) when `AppPreferences.gpt54FastMode` is enabled and the client did not already set `service_tier`
 - Preserves JSON key order by editing the raw JSON string instead of re-serializing
 
@@ -84,10 +87,11 @@ What it does not do anymore:
 
 ## Auth And Providers
 
-The current app/UI only exposes two provider types:
+The current app/UI exposes three provider types:
 
 - `claude`
 - `codex`
+- `gemini`
 
 Auth data lives in `~/.cli-proxy-api/` as JSON files. `AuthManager` scans that directory and reads fields like:
 
@@ -112,11 +116,11 @@ Behavior to know:
 | File | Role |
 |---|---|
 | `src/Sources/AppDelegate.swift` | App lifecycle, menu bar UI, settings window, notifications, Sparkle updater, auth-directory watcher, startup ordering for the two local servers. |
-| `src/Sources/ServerManager.swift` | Starts/stops bundled `cli-proxy-api-plus`, captures logs, merges config, handles provider enable/disable, runs Claude/Codex login commands, and kills orphaned backend processes. |
+| `src/Sources/ServerManager.swift` | Starts/stops bundled `cli-proxy-api-plus`, captures logs, merges config, handles provider enable/disable, runs Claude/Codex/Gemini login commands, and kills orphaned backend processes. |
 | `src/Sources/ThinkingProxy.swift` | Raw TCP HTTP proxy for thinking injection plus Amp request/response rewriting. |
 | `src/Sources/SettingsView.swift` | SwiftUI settings UI for server status, launch-at-login, provider toggles, auth flows, and per-model effort pickers. |
 | `src/Sources/AuthStatus.swift` | `AuthManager`, account parsing, expiry detection, file deletion, and per-account disabled-state updates. |
-| `src/Sources/AppPreferences.swift` | UserDefaults-backed effort preferences for Opus 4.6, Sonnet 4.6, GPT 5.3 Codex, and GPT 5.4, plus the GPT 5.4 fast mode toggle. |
+| `src/Sources/AppPreferences.swift` | UserDefaults-backed effort preferences for Opus 4.6, Sonnet 4.6, GPT 5.3 Codex, GPT 5.4, Gemini 3.1 Pro, and Gemini 3 Flash, plus fast mode toggles. |
 | `src/Sources/Resources/config.yaml` | Bundled CLIProxyAPIPlus config (`port: 8318`, localhost binding, Amp upstream settings, auth dir). |
 | `src/Info.plist` | Bundle metadata. Current source-of-truth values include app name `DroidProxy`, bundle ID `com.droidproxy.app`, and Sparkle feed URL on `anand-92/droidproxy`. |
 

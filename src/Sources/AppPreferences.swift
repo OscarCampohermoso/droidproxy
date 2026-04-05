@@ -7,12 +7,16 @@ enum AppPreferences {
     static let gpt54ReasoningEffortKey = "gpt54ReasoningEffort"
     static let gpt53CodexFastModeKey = "gpt53CodexFastMode"
     static let gpt54FastModeKey = "gpt54FastMode"
+    static let gemini31ProThinkingLevelKey = "gemini31ProThinkingLevel"
+    static let gemini3FlashThinkingLevelKey = "gemini3FlashThinkingLevel"
     static let defaultOpus46ThinkingEffort = "max"
     static let defaultSonnet46ThinkingEffort = "high"
     static let defaultGpt53CodexReasoningEffort = "high"
     static let defaultGpt54ReasoningEffort = "high"
     static let defaultGpt53CodexFastMode = false
     static let defaultGpt54FastMode = false
+    static let defaultGemini31ProThinkingLevel = "high"
+    static let defaultGemini3FlashThinkingLevel = "high"
 
     static var opus46ThinkingEffort: String {
         let defaults = UserDefaults.standard
@@ -52,5 +56,21 @@ enum AppPreferences {
 
     static var gpt54FastMode: Bool {
         UserDefaults.standard.bool(forKey: gpt54FastModeKey)
+    }
+
+    static var gemini31ProThinkingLevel: String {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: gemini31ProThinkingLevelKey) != nil else {
+            return defaultGemini31ProThinkingLevel
+        }
+        return defaults.string(forKey: gemini31ProThinkingLevelKey) ?? defaultGemini31ProThinkingLevel
+    }
+
+    static var gemini3FlashThinkingLevel: String {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: gemini3FlashThinkingLevelKey) != nil else {
+            return defaultGemini3FlashThinkingLevel
+        }
+        return defaults.string(forKey: gemini3FlashThinkingLevelKey) ?? defaultGemini3FlashThinkingLevel
     }
 }

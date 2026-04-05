@@ -309,6 +309,13 @@ class ThinkingProxy {
             return result
         }
 
+        if let level = geminiThinkingLevel(for: model) {
+            let result = rewriteModelValue(in: jsonString, from: model, to: "\(model)(\(level))")
+            NSLog("[ThinkingProxy] Injected Gemini thinking for '\(model)' with level '\(level)'")
+            ThinkingProxy.fileLog("INJECTED Gemini thinking: level=\(level) for model \(model)")
+            return result
+        }
+
         guard let effort = claudeAdaptiveThinkingEffort(for: model) else {
             return nil
         }
@@ -347,6 +354,32 @@ class ThinkingProxy {
             return AppPreferences.sonnet46ThinkingEffort
         }
         return nil
+    }
+
+    private func geminiThinkingLevel(for model: String) -> String? {
+        switch model {
+        case "gemini-3.1-pro-preview":
+            return AppPreferences.gemini31ProThinkingLevel
+        case "gemini-3-flash-preview":
+            return AppPreferences.gemini3FlashThinkingLevel
+        default:
+            return nil
+        }
+    }
+
+    private func rewriteModelValue(in json: String, from oldModel: String, to newModel: String) -> String {
+        let escaped = NSRegularExpression.escapedPattern(for: oldModel)
+        let pattern = "(\"model\"\\s*:\\s*\")\(escaped)(\")"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: json, range: NSRange(json.startIndex..., in: json)) else {
+            NSLog("[ThinkingProxy] Warning: Could not find model value '\(oldModel)' for rewrite")
+            return json
+        }
+        var result = json
+        let matchRange = Range(match.range, in: json)!
+        let replacement = "\"model\":\"\(newModel)\""
+        result.replaceSubrange(matchRange, with: replacement)
+        return result
     }
 
     // MARK: - Surgical JSON string helpers
