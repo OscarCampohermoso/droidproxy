@@ -37,3 +37,6 @@ test-notarization.sh
 website/node_modules/
 website/dist/
 website/.firebase/
+
+# Reference / context material
+context/

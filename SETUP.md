@@ -60,23 +60,23 @@ Open `~/.factory/settings.json` and add the following to the `customModels` arra
       "model": "gemini-3.1-pro-preview",
       "id": "custom:droidproxy:gemini-3.1-pro",
       "index": 4,
-      "baseUrl": "http://localhost:8317/v1",
+      "baseUrl": "http://localhost:8317",
       "apiKey": "dummy-not-used",
       "displayName": "DroidProxy: Gemini 3.1 Pro",
       "maxOutputTokens": 65536,
       "noImageSupport": false,
-      "provider": "openai"
+      "provider": "google"
     },
     {
       "model": "gemini-3-flash-preview",
       "id": "custom:droidproxy:gemini-3-flash",
       "index": 5,
-      "baseUrl": "http://localhost:8317/v1",
+      "baseUrl": "http://localhost:8317",
       "apiKey": "dummy-not-used",
       "displayName": "DroidProxy: Gemini 3 Flash",
       "maxOutputTokens": 65536,
       "noImageSupport": false,
-      "provider": "openai"
+      "provider": "google"
     }
 ]
 ```
