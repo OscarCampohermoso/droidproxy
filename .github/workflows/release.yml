@@ -219,6 +219,7 @@ jobs:
 
           git add appcast.xml
           git commit -m "Update appcast for v${VERSION}" || echo "No appcast changes to commit"
+          git pull --rebase origin main
           git push origin main
 
           git tag -a "v${VERSION}" -m "Release v${VERSION}"
