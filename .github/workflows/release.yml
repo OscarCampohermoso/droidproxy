@@ -1,413 +1,260 @@
-name: Build and Release (Code Signed)
+name: Release
 
 on:
   push:
-    tags:
-      - 'v*'  # Triggers on version tags like v1.0.0
-  workflow_dispatch:  # Allows manual trigger
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'create-app-bundle.sh'
+      - 'entitlements.plist'
+      - 'sparkle-entitlements.plist'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version (without leading v). Leave empty to auto-increment patch.'
+        required: false
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  get-cliproxy-version:
-    name: Get CLIProxyAPIPlus Version
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.get_version.outputs.version }}
-      tag: ${{ steps.get_version.outputs.tag }}
-    steps:
-      - name: Get latest CLIProxyAPIPlus release
-        id: get_version
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Use gh CLI with authentication to avoid rate limiting
-          LATEST_TAG=$(gh release view --repo router-for-me/CLIProxyAPIPlus --json tagName -q '.tagName')
-          VERSION=${LATEST_TAG#v}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-          echo "Found CLIProxyAPIPlus version: $VERSION (tag: $LATEST_TAG)"
-
-  build-signed:
-    name: Build and Sign macOS App (${{ matrix.arch }})
-    needs: get-cliproxy-version
-    runs-on: macos-14  # macOS Sonoma on Apple Silicon (M1)
-    strategy:
-      matrix:
-        include:
-          - arch: arm64
-            cliproxy_arch: darwin_arm64
-            swift_arch: arm64
-            tested: true
-          - arch: x86_64
-            cliproxy_arch: darwin_amd64
-            swift_arch: x86_64
-            tested: false
+  release:
+    name: Build, Sign, Notarize & Release
+    runs-on: macos-14
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Swift
+      - name: Setup Swift
         uses: swift-actions/setup-swift@v2
         with:
-          swift-version: "5.9"
+          swift-version: '5.9'
 
-      - name: Import Code Signing Certificates
+      - name: Import codesigning certificates
         uses: apple-actions/import-codesign-certs@v2
         with:
           p12-file-base64: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12_BASE64 }}
           p12-password: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
 
-      - name: Get version from tag
-        id: get_version
+      - name: Resolve version
+        id: version
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          BUILD_NUMBER=$(git rev-list --count HEAD)
-          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
-          echo "BUILD_NUMBER=${BUILD_NUMBER}" >> $GITHUB_OUTPUT
-          echo "Building version: ${VERSION} (build ${BUILD_NUMBER}) for ${{ matrix.arch }}"
+          set -euo pipefail
 
-      - name: Download CLIProxyAPIPlus for ${{ matrix.arch }}
-        run: |
-          set -e
-          
-          # Use version from pre-fetch job
-          VERSION="${{ needs.get-cliproxy-version.outputs.version }}"
-          LATEST_TAG="${{ needs.get-cliproxy-version.outputs.tag }}"
-          echo "Using CLIProxyAPIPlus version: $VERSION (tag: $LATEST_TAG)"
-          
-          FILENAME="CLIProxyAPIPlus_${VERSION}_${{ matrix.cliproxy_arch }}.tar.gz"
-          URL="https://github.com/router-for-me/CLIProxyAPIPlus/releases/download/$LATEST_TAG/$FILENAME"
-          
-          echo "Downloading: $URL"
-          curl -L -f --retry 3 --retry-delay 5 -o cliproxy.tar.gz "$URL"
-          
-          # Extract to temp dir and find binary
-          mkdir -p src/Sources/Resources
-          TEMP_DIR=$(mktemp -d)
-          tar -xzf cliproxy.tar.gz -C "$TEMP_DIR"
-          
-          # Find the binary (could be CLIProxyAPIPlus or cli-proxy-api-plus)
-          BINARY=$(find "$TEMP_DIR" -type f \( -name "CLIProxyAPIPlus" -o -name "cli-proxy-api-plus" \) | head -1)
-          if [ -z "$BINARY" ]; then
-            # Fallback: find any executable that's not a text file
-            BINARY=$(find "$TEMP_DIR" -type f -perm +111 | head -1)
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            LATEST_VERSION="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST_VERSION"
+            VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
           fi
-          
-          if [ -z "$BINARY" ]; then
-            echo "Error: Could not find binary in tarball" >&2
-            ls -la "$TEMP_DIR"
+
+          BUILD_NUMBER=$(git rev-list --count HEAD)
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Releasing v${VERSION} (build ${BUILD_NUMBER})"
+
+      - name: Resolve CLIProxyAPIPlus version
+        id: cliproxy
+        run: |
+          set -euo pipefail
+
+          OUTPUT=$(src/Sources/Resources/cli-proxy-api-plus 2>&1 || true)
+          VERSION=$(printf '%s\n' "$OUTPUT" | sed -nE 's/.*CLIProxyAPI Version: ([0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?)-plus,.*/\1/p' | head -n 1)
+
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to detect bundled CLIProxyAPIPlus version"
+            echo "$OUTPUT"
             exit 1
           fi
-          
-          echo "Found binary: $BINARY"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bundled CLIProxyAPIPlus: $VERSION"
+
+      - name: Download CLIProxyAPIPlus for arm64
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ steps.cliproxy.outputs.version }}"
+          TAG="v${VERSION}"
+          FILENAME="CLIProxyAPIPlus_${VERSION}_darwin_arm64.tar.gz"
+          URL="https://github.com/router-for-me/CLIProxyAPIPlus/releases/download/${TAG}/${FILENAME}"
+
+          echo "Downloading: $URL"
+          curl -L -f --retry 3 --retry-delay 5 -o cliproxy.tar.gz "$URL"
+
+          TEMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TEMP_DIR" cliproxy.tar.gz' EXIT
+
+          tar -xzf cliproxy.tar.gz -C "$TEMP_DIR"
+
+          BINARY=$(find "$TEMP_DIR" -type f \( -name "CLIProxyAPIPlus" -o -name "cli-proxy-api-plus" \) | head -n 1)
+          if [ -z "$BINARY" ]; then
+            echo "::error::Could not find binary in tarball"
+            find "$TEMP_DIR" -maxdepth 2 -type f -print
+            exit 1
+          fi
+
           cp "$BINARY" src/Sources/Resources/cli-proxy-api-plus
           chmod +x src/Sources/Resources/cli-proxy-api-plus
-          rm -rf "$TEMP_DIR"
-          
-          # Verify
           file src/Sources/Resources/cli-proxy-api-plus
-          ls -lh src/Sources/Resources/cli-proxy-api-plus
 
-      - name: Build app bundle for ${{ matrix.arch }}
+      - name: Build app bundle
         env:
           CODESIGN_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
-          APP_VERSION: ${{ steps.get_version.outputs.VERSION }}
-          TARGET_ARCH: ${{ matrix.swift_arch }}
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          TARGET_ARCH: arm64
         run: |
           chmod +x create-app-bundle.sh
           ./create-app-bundle.sh
 
-      - name: Verify Code Signature
+      - name: Verify code signature
         run: |
-          codesign --verify --deep --strict --verbose=2 VibeProxy.app
-          codesign -dv --verbose=4 VibeProxy.app
-          spctl -a -vvv -t install VibeProxy.app || echo "⚠️ Gatekeeper check failed (expected without notarization)"
+          codesign --verify --deep --strict --verbose=2 DroidProxy.app
+          spctl -a -vvv -t install DroidProxy.app || echo "::warning::Gatekeeper check failed (expected before notarization)"
 
-      - name: Notarize App
+      - name: Notarize
         run: |
-          ditto -c -k --sequesterRsrc --keepParent "VibeProxy.app" "VibeProxy-notarize.zip"
-          
-          echo "Submitting app for notarization..."
-          SUBMIT_OUTPUT=$(xcrun notarytool submit "VibeProxy-notarize.zip" \
+          set -euo pipefail
+
+          ditto -c -k --sequesterRsrc --keepParent "DroidProxy.app" "DroidProxy-notarize.zip"
+
+          SUBMIT_OUTPUT=$(xcrun notarytool submit "DroidProxy-notarize.zip" \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
             --wait --output-format json)
-          
+
           echo "$SUBMIT_OUTPUT"
-          SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | jq -r '.id')
+
           STATUS=$(echo "$SUBMIT_OUTPUT" | jq -r '.status')
-          
           if [ "$STATUS" != "Accepted" ]; then
-            echo "❌ Notarization failed with status: $STATUS"
-            echo "📋 Getting detailed log..."
+            SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | jq -r '.id')
+            echo "::error::Notarization failed with status: $STATUS"
             xcrun notarytool log "$SUBMISSION_ID" \
               --apple-id "${{ secrets.APPLE_ID }}" \
               --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-              --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}"
+              --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" || true
             exit 1
           fi
-          
-          echo "✅ Notarization succeeded! Stapling ticket..."
-          xcrun stapler staple "VibeProxy.app"
-          xcrun stapler validate "VibeProxy.app"
-          echo "✅ App successfully notarized and stapled!"
-          
-          rm "VibeProxy-notarize.zip"
 
-      - name: Create DMG
-        run: |
-          brew install create-dmg
+          xcrun stapler staple "DroidProxy.app"
+          xcrun stapler validate "DroidProxy.app"
+          rm "DroidProxy-notarize.zip"
 
-          create-dmg \
-            --volname "VibeProxy" \
-            --volicon "icon.png" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 100 \
-            --icon "VibeProxy.app" 175 120 \
-            --hide-extension "VibeProxy.app" \
-            --app-drop-link 425 120 \
-            --codesign "${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}" \
-            "VibeProxy-${{ matrix.arch }}.dmg" \
-            "VibeProxy.app" || true
+      - name: Create ZIP
+        run: ditto -c -k --sequesterRsrc --keepParent "DroidProxy.app" "DroidProxy-arm64.zip"
 
-          if [ -f "VibeProxy-${{ matrix.arch }}.dmg" ]; then
-            echo "✅ DMG created successfully"
-            codesign -dv "VibeProxy-${{ matrix.arch }}.dmg" || echo "⚠️ DMG not signed (non-fatal)"
-          fi
+      - name: Calculate checksum
+        run: shasum -a 256 "DroidProxy-arm64.zip" | tee "DroidProxy-arm64.zip.sha256"
 
-      - name: Create ZIP archive
-        run: |
-          ditto -c -k --sequesterRsrc --keepParent "VibeProxy.app" "VibeProxy-${{ matrix.arch }}.zip"
-
-      - name: Calculate checksums
-        run: |
-          shasum -a 256 VibeProxy-${{ matrix.arch }}.zip > VibeProxy-${{ matrix.arch }}.zip.sha256
-          if [ -f "VibeProxy-${{ matrix.arch }}.dmg" ]; then
-            shasum -a 256 VibeProxy-${{ matrix.arch }}.dmg > VibeProxy-${{ matrix.arch }}.dmg.sha256
-          fi
-
-      - name: Sign update for Sparkle
-        id: sparkle_sign
+      - name: Sparkle sign
+        id: sparkle
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
-          SIGN_UPDATE=$(find src/.build -name "sign_update" -type f | grep -v old_dsa | head -1)
-          
+          set -euo pipefail
+
+          SIGN_UPDATE=$(find src/.build -name "sign_update" -type f | grep -v old_dsa | head -n 1)
           if [ -z "$SIGN_UPDATE" ]; then
-            echo "Error: sign_update not found"
+            echo "::error::sign_update not found"
             find src/.build -name "sign_update" -type f
             exit 1
           fi
-          
-          echo "Using sign_update: $SIGN_UPDATE"
-          SIGNATURE=$(echo "$SPARKLE_PRIVATE_KEY" | "$SIGN_UPDATE" VibeProxy-${{ matrix.arch }}.zip --ed-key-file -)
-          
+
+          SIGNATURE=$(echo "$SPARKLE_PRIVATE_KEY" | "$SIGN_UPDATE" "DroidProxy-arm64.zip" --ed-key-file -)
           ED_SIGNATURE=$(echo "$SIGNATURE" | grep -o 'sparkle:edSignature="[^"]*"' | sed 's/sparkle:edSignature="//;s/"$//')
-          LENGTH=$(stat -f%z VibeProxy-${{ matrix.arch }}.zip)
-          
-          echo "ed_signature=$ED_SIGNATURE" >> $GITHUB_OUTPUT
-          echo "length=$LENGTH" >> $GITHUB_OUTPUT
-          echo "Sparkle signature generated for ${{ matrix.arch }}"
+          LENGTH=$(stat -f%z "DroidProxy-arm64.zip")
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: vibeproxy-${{ matrix.arch }}
-          path: |
-            VibeProxy-${{ matrix.arch }}.zip
-            VibeProxy-${{ matrix.arch }}.zip.sha256
-            VibeProxy-${{ matrix.arch }}.dmg
-            VibeProxy-${{ matrix.arch }}.dmg.sha256
-          retention-days: 1
+          echo "ed_signature=$ED_SIGNATURE" >> "$GITHUB_OUTPUT"
+          echo "length=$LENGTH" >> "$GITHUB_OUTPUT"
 
-      - name: Save Sparkle signature
+      - name: Update appcast
         run: |
-          echo "${{ steps.sparkle_sign.outputs.ed_signature }}" > sparkle_signature_${{ matrix.arch }}.txt
-          echo "${{ steps.sparkle_sign.outputs.length }}" > sparkle_length_${{ matrix.arch }}.txt
-      
-      - name: Upload Sparkle signature
-        uses: actions/upload-artifact@v4
-        with:
-          name: sparkle-signature-${{ matrix.arch }}
-          path: |
-            sparkle_signature_${{ matrix.arch }}.txt
-            sparkle_length_${{ matrix.arch }}.txt
-          retention-days: 1
+          set -euo pipefail
 
-  release:
-    name: Create Release
-    needs: [get-cliproxy-version, build-signed]
-    runs-on: macos-14
-    if: startsWith(github.ref, 'refs/tags/')
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get version from tag
-        id: get_version
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Prepare release files
-        run: |
-          mkdir -p release
-          cp artifacts/vibeproxy-arm64/* release/
-          cp artifacts/vibeproxy-x86_64/* release/
-          ls -la release/
-
-      - name: Download Sparkle signatures
-        uses: actions/download-artifact@v4
-        with:
-          pattern: sparkle-signature-*
-          path: sparkle
-          merge-multiple: true
-
-      - name: Update appcast files
-        run: |
-          VERSION="${{ steps.get_version.outputs.VERSION }}"
-          BUILD_NUMBER=$(git rev-list --count HEAD)
+          VERSION="${{ steps.version.outputs.version }}"
+          BUILD_NUMBER="${{ steps.version.outputs.build_number }}"
           TODAY=$(date -u +"%a, %d %b %Y %H:%M:%S +0000")
-          
-          # Read signatures for both architectures
-          ARM64_SIGNATURE=$(cat sparkle/sparkle_signature_arm64.txt)
-          ARM64_LENGTH=$(cat sparkle/sparkle_length_arm64.txt)
-          X86_64_SIGNATURE=$(cat sparkle/sparkle_signature_x86_64.txt)
-          X86_64_LENGTH=$(cat sparkle/sparkle_length_x86_64.txt)
-          
-          # Update arm64 appcast (appcast.xml - default)
-          cat > /tmp/new_item_arm64.xml << ENDOFITEM
-              <item>
-                <title>Version ${VERSION}</title>
-                <sparkle:version>${BUILD_NUMBER}</sparkle:version>
-                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
-                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-                <pubDate>${TODAY}</pubDate>
-                <enclosure url="https://github.com/automazeio/vibeproxy/releases/download/v${VERSION}/VibeProxy-arm64.zip"
-                           type="application/octet-stream"
-                           sparkle:edSignature="${ARM64_SIGNATURE}"
-                           length="${ARM64_LENGTH}"/>
-              </item>
-          ENDOFITEM
-          
-          sed -i.bak '/<language>en<\/language>/r /tmp/new_item_arm64.xml' appcast.xml
-          rm -f appcast.xml.bak /tmp/new_item_arm64.xml
-          
-          echo "Updated appcast.xml (arm64) with version ${VERSION}"
-          
-          # Create/update x86_64 appcast (appcast-x86_64.xml)
-          if [ ! -f appcast-x86_64.xml ]; then
-            # Create new x86_64 appcast from template
-            cat > appcast-x86_64.xml << 'ENDOFAPPCAST'
-          <?xml version="1.0" encoding="utf-8"?>
-          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
-            <channel>
-              <title>VibeProxy Updates (Intel)</title>
-              <link>https://github.com/automazeio/vibeproxy</link>
-              <description>Most recent updates to VibeProxy for Intel Macs</description>
-              <language>en</language>
-            </channel>
-          </rss>
-          ENDOFAPPCAST
-          fi
-          
-          # Add new item to x86_64 appcast
-          cat > /tmp/new_item_x86_64.xml << ENDOFITEM
-              <item>
-                <title>Version ${VERSION}</title>
-                <sparkle:version>${BUILD_NUMBER}</sparkle:version>
-                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
-                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-                <pubDate>${TODAY}</pubDate>
-                <enclosure url="https://github.com/automazeio/vibeproxy/releases/download/v${VERSION}/VibeProxy-x86_64.zip"
-                           type="application/octet-stream"
-                           sparkle:edSignature="${X86_64_SIGNATURE}"
-                           length="${X86_64_LENGTH}"/>
-              </item>
-          ENDOFITEM
-          
-          sed -i.bak '/<language>en<\/language>/r /tmp/new_item_x86_64.xml' appcast-x86_64.xml
-          rm -f appcast-x86_64.xml.bak /tmp/new_item_x86_64.xml
-          
-          echo "Updated appcast-x86_64.xml with version ${VERSION}"
-          head -30 appcast.xml
-          echo "---"
-          head -30 appcast-x86_64.xml
+          ED_SIGNATURE="${{ steps.sparkle.outputs.ed_signature }}"
+          LENGTH="${{ steps.sparkle.outputs.length }}"
 
-      - name: Commit appcast files
+          cat > /tmp/new_item.xml <<ENDOFITEM
+              <item>
+                <title>Version ${VERSION}</title>
+                <sparkle:version>${BUILD_NUMBER}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+                <pubDate>${TODAY}</pubDate>
+                <enclosure url="https://github.com/OscarCampohermoso/droidproxy/releases/download/v${VERSION}/DroidProxy-arm64.zip"
+                           type="application/octet-stream"
+                           sparkle:edSignature="${ED_SIGNATURE}"
+                           length="${LENGTH}"/>
+              </item>
+          ENDOFITEM
+
+          sed -i.bak '/<language>en<\/language>/r /tmp/new_item.xml' appcast.xml
+          rm -f appcast.xml.bak /tmp/new_item.xml
+
+          head -25 appcast.xml
+
+      - name: Commit appcast and tag
         run: |
+          set -euo pipefail
+
+          VERSION="${{ steps.version.outputs.version }}"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
-          git pull origin main
-          git add appcast.xml appcast-x86_64.xml
-          git commit -m "Update appcast files for v${{ steps.get_version.outputs.VERSION }}" || echo "No changes to commit"
+
+          git add appcast.xml
+          git commit -m "Update appcast for v${VERSION}" || echo "No appcast changes to commit"
+          git pull --rebase origin main
           git push origin main
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: DroidProxy ${{ steps.version.outputs.version }}
           files: |
-            release/VibeProxy-arm64.zip
-            release/VibeProxy-arm64.zip.sha256
-            release/VibeProxy-arm64.dmg
-            release/VibeProxy-arm64.dmg.sha256
-            release/VibeProxy-x86_64.zip
-            release/VibeProxy-x86_64.zip.sha256
-            release/VibeProxy-x86_64.dmg
-            release/VibeProxy-x86_64.dmg.sha256
+            DroidProxy-arm64.zip
+            DroidProxy-arm64.zip.sha256
           draft: false
           prerelease: false
           generate_release_notes: true
           body: |
-            ## VibeProxy ${{ steps.get_version.outputs.VERSION }}
+            ## DroidProxy ${{ steps.version.outputs.version }}
 
-            ### Downloads
+            ### Download
 
-            | Architecture | DMG | ZIP |
-            |--------------|-----|-----|
-            | **Apple Silicon** (M1/M2/M3) | `VibeProxy-arm64.dmg` | `VibeProxy-arm64.zip` |
-            | **Intel** (x86_64) ⚠️ | `VibeProxy-x86_64.dmg` | `VibeProxy-x86_64.zip` |
-
-            > ⚠️ **Intel build is untested** - Please report if it works for you!
+            | File | Description |
+            |------|-------------|
+            | `DroidProxy-arm64.zip` | Apple Silicon (M1/M2/M3/M4) |
 
             ### Installation
 
-            1. Download the appropriate file for your Mac
-            2. For DMG: Mount and drag to Applications
-            3. For ZIP: Extract and drag to Applications
-            4. Double-click to launch
+            1. Download `DroidProxy-arm64.zip`
+            2. Extract and drag `DroidProxy.app` to Applications
+            3. Double-click to launch
 
-            ### What's New
-
-            See the [CHANGELOG](https://github.com/automazeio/vibeproxy/blob/main/CHANGELOG.md) for details.
-
-            ### Verification
-
-            This release is **code signed** with Apple Developer ID and includes SHA-256 checksums.
+            Code signed with Apple Developer ID and notarized.
 
             ```bash
-            shasum -a 256 -c VibeProxy-arm64.zip.sha256
+            shasum -a 256 -c DroidProxy-arm64.zip.sha256
             ```
-
-            ---
-
-            ✅ **Code Signed & Notarized** - No Gatekeeper warnings!
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

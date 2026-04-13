@@ -78,6 +78,7 @@ struct ServiceRow<ExtraContent: View>: View {
     let onDisconnect: (AuthAccount) -> Void
     let onToggleDisabled: (AuthAccount) -> Void
     let onToggleEnabled: (Bool) -> Void
+    let toggleTint: Color
     var onExpandChange: ((Bool) -> Void)? = nil
     @ViewBuilder var extraContent: () -> ExtraContent
 
@@ -104,6 +105,7 @@ struct ServiceRow<ExtraContent: View>: View {
                 ))
                 .toggleStyle(.switch)
                 .controlSize(.mini)
+                .tint(toggleTint)
                 .labelsHidden()
                 .help(isEnabled ? "Disable this provider" : "Enable this provider")
 
@@ -218,7 +220,16 @@ struct SettingsView: View {
     let thinkingProxy: ThinkingProxy
     @StateObject private var authManager = AuthManager()
     @State private var launchAtLogin = false
-    @AppStorage(AppPreferences.forceMaxOpus46EffortKey) private var forceMaxOpus46Effort = AppPreferences.defaultForceMaxOpus46Effort
+    @AppStorage(AppPreferences.opus46ThinkingEffortKey) private var opus46ThinkingEffort = AppPreferences.defaultOpus46ThinkingEffort
+    @AppStorage(AppPreferences.sonnet46ThinkingEffortKey) private var sonnet46ThinkingEffort = AppPreferences.defaultSonnet46ThinkingEffort
+    @AppStorage(AppPreferences.gpt53CodexReasoningEffortKey) private var gpt53CodexReasoningEffort = AppPreferences.defaultGpt53CodexReasoningEffort
+    @AppStorage(AppPreferences.gpt54ReasoningEffortKey) private var gpt54ReasoningEffort = AppPreferences.defaultGpt54ReasoningEffort
+    @AppStorage(AppPreferences.gpt53CodexFastModeKey) private var gpt53CodexFastMode = AppPreferences.defaultGpt53CodexFastMode
+    @AppStorage(AppPreferences.gpt54FastModeKey) private var gpt54FastMode = AppPreferences.defaultGpt54FastMode
+    @AppStorage(AppPreferences.gemini31ProThinkingLevelKey) private var gemini31ProThinkingLevel = AppPreferences.defaultGemini31ProThinkingLevel
+    @AppStorage(AppPreferences.gemini3FlashThinkingLevelKey) private var gemini3FlashThinkingLevel = AppPreferences.defaultGemini3FlashThinkingLevel
+    @AppStorage(AppPreferences.allowRemoteKey) private var allowRemote = AppPreferences.defaultAllowRemote
+    @AppStorage(AppPreferences.secretKeyKey) private var secretKey = AppPreferences.defaultSecretKey
     @AppStorage(AppPreferences.proxyPortKey) private var storedProxyPort = AppPreferences.defaultProxyPort
     @AppStorage(AppPreferences.backendPortKey) private var storedBackendPort = AppPreferences.defaultBackendPort
     @State private var authenticatingService: ServiceType? = nil
@@ -228,6 +239,18 @@ struct SettingsView: View {
     @State private var fileMonitor: DispatchSourceFileSystemObject?
     @State private var pendingRefresh: DispatchWorkItem?
     @State private var expandedRowCount = 0
+    @State private var factoryModelsInstalled = false
+    @State private var challengerPluginInstalled = false
+    @State private var remoteManagementExpanded = false
+    @State private var claudeModelsExpanded = true
+    @State private var codexModelsExpanded = true
+    @State private var geminiModelsExpanded = true
+    private let claudeEffortSelectionColor = Color(red: 0xD9/255, green: 0x77/255, blue: 0x57/255)
+    private let codexEffortSelectionColor = Color(red: 0x74/255, green: 0xAA/255, blue: 0x9C/255)
+    private let geminiEffortSelectionColor = Color(red: 0x42/255, green: 0x85/255, blue: 0xF4/255)
+    private let oledWindowBackground = Color.black
+    private let oledSectionBackground = Color(red: 0x12/255, green: 0x12/255, blue: 0x12/255)
+    private let oledFooterText = Color(red: 0xA8/255, green: 0xA8/255, blue: 0xA8/255)
     @State private var proxyPortInput = "\(AppPreferences.proxyPort)"
     @State private var backendPortInput = "\(AppPreferences.backendPort)"
     
@@ -263,7 +286,7 @@ struct SettingsView: View {
                         }) {
                             HStack(spacing: 6) {
                                 Circle()
-                                    .fill(serverManager.isRunning ? AccountRowView.accent : Color.red)
+                                    .fill(serverManager.isRunning ? Color.green : Color.red)
                                     .frame(width: 8, height: 8)
                                 Text(serverManager.isRunning ? "Running" : "Stopped")
                             }
@@ -271,15 +294,13 @@ struct SettingsView: View {
                         .buttonStyle(.plain)
                     }
                 }
+                .listRowBackground(oledSectionBackground)
 
                 Section {
                     Toggle("Launch at login", isOn: $launchAtLogin)
                         .onChange(of: launchAtLogin) { newValue in
                             toggleLaunchAtLogin(newValue)
                         }
-
-                    Toggle("Force Opus 4.6 max effort", isOn: $forceMaxOpus46Effort)
-                        .help("When off, Opus 4.6 adaptive thinking uses auto effort.")
 
                     HStack {
                         Text("Auth files")
@@ -288,7 +309,114 @@ struct SettingsView: View {
                             openAuthFolder()
                         }
                     }
+
+                    HStack {
+                        Text("Factory custom models")
+                        Spacer()
+                        if factoryModelsInstalled {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                    .font(.caption)
+                                Text("Applied")
+                                    .font(.caption)
+                                    .foregroundColor(.green)
+                            }
+                        }
+                        Button(factoryModelsInstalled ? "Re-apply" : "Apply") {
+                            applyFactoryCustomModels()
+                        }
+                    }
+
+                    HStack {
+                        Text("Challenger Plugin")
+                        Button(action: {}) {
+                            Image(systemName: "questionmark.circle")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Installs three devil's advocate code reviewer droids (Opus 4.6, GPT 5.4, Gemini 3.1 Pro) and their slash commands into your Factory config. Use /challenge-opus, /challenge-gpt, or /challenge-gemini in any Droid session for a cross-model second opinion on your code.")
+                        Spacer()
+                        if challengerPluginInstalled {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                    .font(.caption)
+                                Text("Applied")
+                                    .font(.caption)
+                                    .foregroundColor(.green)
+                            }
+                        }
+                        Button(challengerPluginInstalled ? "Re-apply" : "Apply") {
+                            applyChallengerPlugin()
+                        }
+                    }
                 }
+                .listRowBackground(oledSectionBackground)
+
+                Section {
+                    if remoteManagementExpanded {
+                        Toggle("Allow remote access", isOn: $allowRemote)
+                            .onChange(of: allowRemote) { _ in
+                                _ = serverManager.getConfigPath()
+                            }
+
+                        HStack {
+                            Text("Secret key")
+                            Spacer()
+                            SecureField("Enter secret key", text: $secretKey)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 200)
+                                .onSubmit {
+                                    _ = serverManager.getConfigPath()
+                                }
+                        }
+
+                        if allowRemote && secretKey.isEmpty {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.caption)
+                                Text("Set a secret key to secure remote access")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    } else {
+                        HStack(spacing: 6) {
+                            Text(allowRemote ? "Remote access: On" : "Remote access: Off")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            if allowRemote && secretKey.isEmpty {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.caption)
+                                Text("Secret key missing")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    }
+                } header: {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            remoteManagementExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Remote Management")
+                            Image(systemName: remoteManagementExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remote Management")
+                    .accessibilityValue(remoteManagementExpanded ? "Expanded" : "Collapsed")
+                }
+                .listRowBackground(oledSectionBackground)
 
                 Section("Ports") {
                     HStack {
@@ -344,12 +472,183 @@ struct SettingsView: View {
                         onDisconnect: { account in disconnectAccount(account) },
                         onToggleDisabled: { account in toggleAccountDisabled(account) },
                         onToggleEnabled: { enabled in serverManager.setProviderEnabled("claude", enabled: enabled) },
+                        toggleTint: claudeEffortSelectionColor,
                         onExpandChange: { expanded in expandedRowCount += expanded ? 1 : -1 }
                     ) { EmptyView() }
+
+                    if serverManager.isProviderEnabled("claude") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 4) {
+                                Text("Model Settings")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Image(systemName: claudeModelsExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    claudeModelsExpanded.toggle()
+                                }
+                            }
+                            if claudeModelsExpanded {
+                                effortPickerRow(
+                                    "Opus 4.6 thinking effort",
+                                    selection: $opus46ThinkingEffort,
+                                    options: ["low", "medium", "high", "max"],
+                                    tint: claudeEffortSelectionColor
+                                )
+                                effortPickerRow(
+                                    "Sonnet 4.6 thinking effort",
+                                    selection: $sonnet46ThinkingEffort,
+                                    options: ["low", "medium", "high"],
+                                    tint: claudeEffortSelectionColor
+                                )
+                            }
+                        }
+                        .padding(.leading, 28)
+                    }
+
+                    ServiceRow(
+                        serviceType: .codex,
+                        iconName: "icon-codex.png",
+                        accounts: authManager.accounts(for: .codex),
+                        isAuthenticating: authenticatingService == .codex,
+                        helpText: nil,
+                        isEnabled: serverManager.isProviderEnabled("codex"),
+                        customTitle: nil,
+                        onConnect: { connectService(.codex) },
+                        onDisconnect: { account in disconnectAccount(account) },
+                        onToggleDisabled: { account in toggleAccountDisabled(account) },
+                        onToggleEnabled: { enabled in serverManager.setProviderEnabled("codex", enabled: enabled) },
+                        toggleTint: codexEffortSelectionColor,
+                        onExpandChange: { expanded in expandedRowCount += expanded ? 1 : -1 }
+                    ) { EmptyView() }
+
+                    if serverManager.isProviderEnabled("codex") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 4) {
+                                Text("Model Settings")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Image(systemName: codexModelsExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    codexModelsExpanded.toggle()
+                                }
+                            }
+                            if codexModelsExpanded {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text("GPT 5.3 Codex reasoning effort")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        Toggle("Fast mode", isOn: $gpt53CodexFastMode)
+                                            .toggleStyle(.checkbox)
+                                            .font(.caption)
+                                            .help("Injects service_tier=priority for GPT 5.3 Codex Responses API requests (Codex fast mode)")
+                                    }
+                                    Picker("", selection: $gpt53CodexReasoningEffort) {
+                                        ForEach(["low", "medium", "high", "xhigh"], id: \.self) { option in
+                                            Text(option).tag(option)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .tint(codexEffortSelectionColor)
+                                    .labelsHidden()
+                                }
+                                .padding(.vertical, 2)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text("GPT 5.4 reasoning effort")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        Toggle("Fast mode", isOn: $gpt54FastMode)
+                                            .toggleStyle(.checkbox)
+                                            .font(.caption)
+                                            .help("Injects service_tier=priority for GPT 5.4 Responses API requests (Codex fast mode)")
+                                    }
+                                    Picker("", selection: $gpt54ReasoningEffort) {
+                                        ForEach(["low", "medium", "high", "xhigh"], id: \.self) { option in
+                                            Text(option).tag(option)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .tint(codexEffortSelectionColor)
+                                    .labelsHidden()
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+                        .padding(.leading, 28)
+                    }
+
+                    ServiceRow(
+                        serviceType: .gemini,
+                        iconName: "icon-gemini.png",
+                        accounts: authManager.accounts(for: .gemini),
+                        isAuthenticating: authenticatingService == .gemini,
+                        helpText: "If you have multiple GCP projects, authentication will use your default project. Set your desired project as default in Google AI Studio before connecting.",
+                        isEnabled: serverManager.isProviderEnabled("gemini"),
+                        customTitle: nil,
+                        onConnect: { connectService(.gemini) },
+                        onDisconnect: { account in disconnectAccount(account) },
+                        onToggleDisabled: { account in toggleAccountDisabled(account) },
+                        onToggleEnabled: { enabled in serverManager.setProviderEnabled("gemini", enabled: enabled) },
+                        toggleTint: geminiEffortSelectionColor,
+                        onExpandChange: { expanded in expandedRowCount += expanded ? 1 : -1 }
+                    ) { EmptyView() }
+
+                    if serverManager.isProviderEnabled("gemini") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 4) {
+                                Text("Model Settings")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Image(systemName: geminiModelsExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    geminiModelsExpanded.toggle()
+                                }
+                            }
+                            if geminiModelsExpanded {
+                                effortPickerRow(
+                                    "Gemini 3.1 Pro thinking level",
+                                    selection: $gemini31ProThinkingLevel,
+                                    options: ["low", "medium", "high"],
+                                    tint: geminiEffortSelectionColor
+                                )
+                                effortPickerRow(
+                                    "Gemini 3 Flash thinking level",
+                                    selection: $gemini3FlashThinkingLevel,
+                                    options: ["minimal", "low", "medium", "high"],
+                                    tint: geminiEffortSelectionColor
+                                )
+                            }
+                        }
+                        .padding(.leading, 28)
+                    }
                 }
+                .listRowBackground(oledSectionBackground)
             }
             .formStyle(.grouped)
-            .scrollDisabled(expandedRowCount == 0)
+            .scrollContentBackground(.hidden)
+            .background(oledWindowBackground)
+            .scrollDisabled(false)
 
             Spacer()
                 .frame(height: 6)
@@ -359,33 +658,34 @@ struct SettingsView: View {
                 HStack(spacing: 4) {
                     Text("DroidProxy \(appVersion) was made possible thanks to")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(oledFooterText)
                     Link("CLIProxyAPIPlus", destination: URL(string: "https://github.com/router-for-me/CLIProxyAPIPlus")!)
                         .font(.caption)
                         .underline()
-                        .foregroundColor(.secondary)
+                        .foregroundColor(oledFooterText)
                         .onHover { inside in
                             if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                         }
                     Text("|")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(oledFooterText)
                     Text("License: MIT")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(oledFooterText)
                 }
 
                 HStack(spacing: 4) {
                     Text("© 2026")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(oledFooterText)
                     Text("DroidProxy")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(oledFooterText)
                 }
 
                 Link("Report an issue", destination: URL(string: "https://github.com/OscarCampohermoso/droidproxy/issues")!)
                     .font(.caption)
+                    .foregroundColor(oledFooterText)
                     .padding(.top, 6)
                     .onHover { inside in
                         if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
@@ -393,12 +693,16 @@ struct SettingsView: View {
             }
             .padding(.bottom, 12)
         }
+        .background(oledWindowBackground)
         .accentColor(AccountRowView.accent)
-        .frame(width: 480, height: 740)
+        .preferredColorScheme(.dark)
+        .frame(width: 480, height: 814)
         .onAppear {
             authManager.checkAuthStatus()
             checkLaunchAtLogin()
             startMonitoringAuthDirectory()
+            factoryModelsInstalled = checkFactoryModelsInstalled()
+            challengerPluginInstalled = checkChallengerPluginInstalled()
         }
         .onDisappear {
             stopMonitoringAuthDirectory()
@@ -411,6 +715,24 @@ struct SettingsView: View {
     }
 
     // MARK: - Actions
+
+    @ViewBuilder
+    private func effortPickerRow(_ title: String, selection: Binding<String>, options: [String], tint: Color = AccountRowView.accent) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Picker("", selection: selection) {
+                ForEach(options, id: \.self) { option in
+                    Text(option).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .tint(tint)
+            .labelsHidden()
+        }
+        .padding(.vertical, 2)
+    }
     
     private func toggleAccountDisabled(_ account: AuthAccount) {
         if authManager.toggleAccountDisabled(account) {
@@ -497,6 +819,8 @@ struct SettingsView: View {
         let command: AuthCommand
         switch serviceType {
         case .claude: command = .claudeLogin
+        case .codex: command = .codexLogin
+        case .gemini: command = .geminiLogin
         }
         
         serverManager.runAuthCommand(command) { success, output in
@@ -521,6 +845,10 @@ struct SettingsView: View {
         switch serviceType {
         case .claude:
             return "🌐 Browser opened for Claude Code authentication.\n\nPlease complete the login in your browser.\n\nThe app will automatically detect your credentials."
+        case .codex:
+            return "🌐 Browser opened for Codex authentication.\n\nPlease complete the login in your browser.\n\nThe app will automatically detect your credentials."
+        case .gemini:
+            return "🌐 Browser opened for Gemini authentication.\n\nPlease complete the login in your browser.\n\nThe app will automatically detect your credentials.\n\nIf having issues, run in terminal:\n/Applications/DroidProxy.app/Contents/Resources/cli-proxy-api-plus --config ~/.cli-proxy-api/merged-config.yaml -login"
         }
     }
     
@@ -552,6 +880,352 @@ struct SettingsView: View {
         }
     }
     
+    // MARK: - Factory Custom Models
+
+    private static let droidProxyModels: [[String: Any]] = [
+        [
+            "model": "claude-opus-4-6",
+            "id": "custom:droidproxy:opus-4-6",
+            "baseUrl": "http://localhost:8317",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: Opus 4.6",
+            "maxOutputTokens": 128000,
+            "noImageSupport": false,
+            "provider": "anthropic"
+        ],
+        [
+            "model": "claude-sonnet-4-6",
+            "id": "custom:droidproxy:sonnet-4-6",
+            "baseUrl": "http://localhost:8317",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: Sonnet 4.6",
+            "maxOutputTokens": 64000,
+            "noImageSupport": false,
+            "provider": "anthropic"
+        ],
+        [
+            "model": "gpt-5.3-codex",
+            "id": "custom:droidproxy:gpt-5.3-codex",
+            "baseUrl": "http://localhost:8317/v1",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: GPT 5.3 Codex",
+            "maxOutputTokens": 128000,
+            "noImageSupport": false,
+            "provider": "openai"
+        ],
+        [
+            "model": "gpt-5.4",
+            "id": "custom:droidproxy:gpt-5.4",
+            "baseUrl": "http://localhost:8317/v1",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: GPT 5.4",
+            "maxOutputTokens": 128000,
+            "noImageSupport": false,
+            "provider": "openai"
+        ],
+        [
+            "model": "gemini-3.1-pro-preview",
+            "id": "custom:droidproxy:gemini-3.1-pro",
+            "baseUrl": "http://localhost:8317",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: Gemini 3.1 Pro",
+            "maxOutputTokens": 65536,
+            "noImageSupport": false,
+            "provider": "google"
+        ],
+        [
+            "model": "gemini-3-flash-preview",
+            "id": "custom:droidproxy:gemini-3-flash",
+            "baseUrl": "http://localhost:8317",
+            "apiKey": "dummy-not-used",
+            "displayName": "DroidProxy: Gemini 3 Flash",
+            "maxOutputTokens": 65536,
+            "noImageSupport": false,
+            "provider": "google"
+        ]
+    ]
+
+    private func factorySettingsURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".factory")
+            .appendingPathComponent("settings.json")
+    }
+
+    private func providerKey(for model: [String: Any]) -> String? {
+        guard let name = model["model"] as? String else { return nil }
+        if name.hasPrefix("claude") { return "claude" }
+        if name.hasPrefix("gpt") { return "codex" }
+        if name.hasPrefix("gemini") { return "gemini" }
+        return nil
+    }
+
+    private func checkFactoryModelsInstalled() -> Bool {
+        let url = factorySettingsURL()
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = json["customModels"] as? [[String: Any]] else {
+            return false
+        }
+        let existingIds = Set(models.compactMap { $0["id"] as? String })
+        let enabledModels = Self.droidProxyModels.filter { model in
+            guard let key = providerKey(for: model) else { return true }
+            return serverManager.isProviderEnabled(key)
+        }
+        let droidIds = Set(enabledModels.compactMap { $0["id"] as? String })
+        return !droidIds.isEmpty && droidIds.isSubset(of: existingIds)
+    }
+
+    private func applyFactoryCustomModels() {
+        let url = factorySettingsURL()
+        let factoryDir = url.deletingLastPathComponent()
+
+        try? FileManager.default.createDirectory(at: factoryDir, withIntermediateDirectories: true)
+
+        var settings: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            settings = existing
+        }
+
+        var models = (settings["customModels"] as? [[String: Any]]) ?? []
+
+        let droidIds = Set(Self.droidProxyModels.compactMap { $0["id"] as? String })
+        models.removeAll { item in
+            guard let id = item["id"] as? String else { return false }
+            return droidIds.contains(id) || id.hasPrefix("custom:CC:")
+        }
+
+        let enabledModels = Self.droidProxyModels.filter { model in
+            guard let key = providerKey(for: model) else { return true }
+            return serverManager.isProviderEnabled(key)
+        }
+        let startIndex = models.count
+        for (offset, var model) in enabledModels.enumerated() {
+            model["index"] = startIndex + offset
+            models.append(model)
+        }
+
+        settings["customModels"] = models
+
+        do {
+            var data = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+            if var jsonString = String(data: data, encoding: .utf8) {
+                jsonString = jsonString.replacingOccurrences(of: "\\/", with: "/")
+                data = jsonString.data(using: .utf8) ?? data
+            }
+            try data.write(to: url, options: .atomic)
+            factoryModelsInstalled = true
+            authResultSuccess = true
+            authResultMessage = "DroidProxy models added to Factory settings.\n\nRestart Factory (or open a new session) to see them in the model picker."
+            showingAuthResult = true
+            NSLog("[SettingsView] Factory custom models applied to %@", url.path)
+        } catch {
+            authResultSuccess = false
+            authResultMessage = "Failed to update Factory settings: \(error.localizedDescription)"
+            showingAuthResult = true
+            NSLog("[SettingsView] Failed to apply Factory custom models: %@", error.localizedDescription)
+        }
+    }
+
+    // MARK: - Challenger Plugin
+
+    private static let challengerPluginFiles: [(directory: String, filename: String, content: String)] = [
+        ("droids", "challenger-opus.md", """
+        ---
+        name: challenger-opus
+        description: Devil's advocate code reviewer that challenges decisions, critiques patterns, and suggests better alternatives. Use when you want a tough second opinion on code, architecture, or design choices.
+        model: custom:droidproxy:opus-4-6
+        tools: ["Read", "LS", "Grep", "Glob", "WebSearch", "FetchUrl"]
+        ---
+
+        You are a senior engineer playing devil's advocate. Your job is to challenge every code decision presented to you and push for better alternatives. You are constructive but relentless.
+
+        When reviewing code or decisions:
+
+        1. **Question the "why"** - Don't accept decisions at face value. Ask why this approach was chosen over alternatives.
+        2. **Find the tradeoffs** - Every decision has costs. Surface the ones the author may not have considered.
+        3. **Suggest concrete alternatives** - Don't just criticize; propose better approaches with reasoning.
+        4. **Stress-test edge cases** - Think about failure modes, scale, concurrency, and maintainability.
+        5. **Challenge patterns** - If a pattern is used, question whether it's the right abstraction or if it adds unnecessary complexity.
+        6. **Check for over-engineering** - Call out when something is more complex than it needs to be.
+        7. **Check for under-engineering** - Call out when shortcuts will cause pain later.
+
+        If needed, use web search to back up your arguments with industry best practices, known pitfalls, or better patterns from well-regarded projects.
+
+        Respond with:
+
+        **Verdict:** <one-line overall assessment>
+
+        **Challenges:**
+        - <decision challenged>: <why it's questionable> \u{2192} <suggested alternative>
+
+        **Edge Cases / Risks:**
+        - <scenario that could break or degrade>
+
+        **What's Actually Good:**
+        - <acknowledge solid decisions so feedback is balanced>
+        """),
+        ("droids", "challenger-gpt.md", """
+        ---
+        name: challenger-gpt
+        description: Devil's advocate code reviewer that challenges decisions, critiques patterns, and suggests better alternatives. Use when you want a tough second opinion on code, architecture, or design choices.
+        model: custom:droidproxy:gpt-5.4
+        tools: ["Read", "LS", "Grep", "Glob", "WebSearch", "FetchUrl"]
+        ---
+
+        You are a senior engineer playing devil's advocate. Your job is to challenge every code decision presented to you and push for better alternatives. You are constructive but relentless.
+
+        When reviewing code or decisions:
+
+        1. **Question the "why"** - Don't accept decisions at face value. Ask why this approach was chosen over alternatives.
+        2. **Find the tradeoffs** - Every decision has costs. Surface the ones the author may not have considered.
+        3. **Suggest concrete alternatives** - Don't just criticize; propose better approaches with reasoning.
+        4. **Stress-test edge cases** - Think about failure modes, scale, concurrency, and maintainability.
+        5. **Challenge patterns** - If a pattern is used, question whether it's the right abstraction or if it adds unnecessary complexity.
+        6. **Check for over-engineering** - Call out when something is more complex than it needs to be.
+        7. **Check for under-engineering** - Call out when shortcuts will cause pain later.
+
+        If needed, use web search to back up your arguments with industry best practices, known pitfalls, or better patterns from well-regarded projects.
+
+        Respond with:
+
+        **Verdict:** <one-line overall assessment>
+
+        **Challenges:**
+        - <decision challenged>: <why it's questionable> \u{2192} <suggested alternative>
+
+        **Edge Cases / Risks:**
+        - <scenario that could break or degrade>
+
+        **What's Actually Good:**
+        - <acknowledge solid decisions so feedback is balanced>
+        """),
+        ("droids", "challenger-gemini.md", """
+        ---
+        name: challenger-gemini
+        description: Devil's advocate code reviewer that challenges decisions, critiques patterns, and suggests better alternatives. Use when you want a tough second opinion on code, architecture, or design choices.
+        model: custom:droidproxy:gemini-3.1-pro
+        tools: ["Read", "LS", "Grep", "Glob", "WebSearch", "FetchUrl"]
+        ---
+
+        You are a senior engineer playing devil's advocate. Your job is to challenge every code decision presented to you and push for better alternatives. You are constructive but relentless.
+
+        When reviewing code or decisions:
+
+        1. **Question the "why"** - Don't accept decisions at face value. Ask why this approach was chosen over alternatives.
+        2. **Find the tradeoffs** - Every decision has costs. Surface the ones the author may not have considered.
+        3. **Suggest concrete alternatives** - Don't just criticize; propose better approaches with reasoning.
+        4. **Stress-test edge cases** - Think about failure modes, scale, concurrency, and maintainability.
+        5. **Challenge patterns** - If a pattern is used, question whether it's the right abstraction or if it adds unnecessary complexity.
+        6. **Check for over-engineering** - Call out when something is more complex than it needs to be.
+        7. **Check for under-engineering** - Call out when shortcuts will cause pain later.
+
+        If needed, use web search to back up your arguments with industry best practices, known pitfalls, or better patterns from well-regarded projects.
+
+        Respond with:
+
+        **Verdict:** <one-line overall assessment>
+
+        **Challenges:**
+        - <decision challenged>: <why it's questionable> \u{2192} <suggested alternative>
+
+        **Edge Cases / Risks:**
+        - <scenario that could break or degrade>
+
+        **What's Actually Good:**
+        - <acknowledge solid decisions so feedback is balanced>
+        """),
+        ("commands", "challenge-opus.md", """
+        ---
+        description: Summon the Challenger droid (Opus) to review code, decisions, and design
+        ---
+
+        Launch the challenger-opus droid to review the current code changes, decisions, or design being discussed in this conversation.
+
+        Steps:
+        1. Gather context: run `git diff` (or use the recent conversation context) to understand what's being reviewed.
+        2. Use the Task tool to launch the subagent:
+           - `challenger-opus`
+        3. Pass it the relevant code, design decisions, or architecture being discussed.
+        4. Once it responds, present a summary of findings and actionable items.
+
+        Keep the summary concise and actionable. Focus on real issues, not nitpicks.
+        """),
+        ("commands", "challenge-gpt.md", """
+        ---
+        description: Summon the Challenger droid (GPT) to review code, decisions, and design
+        ---
+
+        Launch the challenger-gpt droid to review the current code changes, decisions, or design being discussed in this conversation.
+
+        Steps:
+        1. Gather context: run `git diff` (or use the recent conversation context) to understand what's being reviewed.
+        2. Use the Task tool to launch the subagent:
+           - `challenger-gpt`
+        3. Pass it the relevant code, design decisions, or architecture being discussed.
+        4. Once it responds, present a summary of findings and actionable items.
+
+        Keep the summary concise and actionable. Focus on real issues, not nitpicks.
+        """),
+        ("commands", "challenge-gemini.md", """
+        ---
+        description: Summon the Challenger droid (Gemini) to review code, decisions, and design
+        ---
+
+        Launch the challenger-gemini droid to review the current code changes, decisions, or design being discussed in this conversation.
+
+        Steps:
+        1. Gather context: run `git diff` (or use the recent conversation context) to understand what's being reviewed.
+        2. Use the Task tool to launch the subagent:
+           - `challenger-gemini`
+        3. Pass it the relevant code, design decisions, or architecture being discussed.
+        4. Once it responds, present a summary of findings and actionable items.
+
+        Keep the summary concise and actionable. Focus on real issues, not nitpicks.
+        """)
+    ]
+
+    private func checkChallengerPluginInstalled() -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".factory")
+        return Self.challengerPluginFiles.allSatisfy { entry in
+            let url = home.appendingPathComponent(entry.directory).appendingPathComponent(entry.filename)
+            return FileManager.default.fileExists(atPath: url.path)
+        }
+    }
+
+    private func applyChallengerPlugin() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".factory")
+        let fm = FileManager.default
+
+        do {
+            for entry in Self.challengerPluginFiles {
+                let dir = home.appendingPathComponent(entry.directory)
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                let fileURL = dir.appendingPathComponent(entry.filename)
+                // Trim leading whitespace from each line caused by Swift multi-line string indentation
+                let trimmed = entry.content
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { line in
+                        var s = String(line)
+                        while s.hasPrefix("        ") { s = String(s.dropFirst(8)) }
+                        return s
+                    }
+                    .joined(separator: "\n")
+                try trimmed.write(to: fileURL, atomically: true, encoding: .utf8)
+            }
+            challengerPluginInstalled = true
+            authResultSuccess = true
+            authResultMessage = "Challenger droids and slash commands installed.\n\nUse /challenge-opus, /challenge-gpt, or /challenge-gemini in any Droid session."
+            showingAuthResult = true
+            NSLog("[SettingsView] Challenger plugin installed to ~/.factory")
+        } catch {
+            authResultSuccess = false
+            authResultMessage = "Failed to install Challenger plugin: \(error.localizedDescription)"
+            showingAuthResult = true
+            NSLog("[SettingsView] Failed to install Challenger plugin: %@", error.localizedDescription)
+        }
+    }
+
     // MARK: - File Monitoring
     
     private func startMonitoringAuthDirectory() {

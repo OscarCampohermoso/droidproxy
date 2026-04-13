@@ -31,3 +31,13 @@ src/Sources/Resources/AppIcon.iconset/
 *.log
 test-notarization.sh
 .vscode/settings.json
+.sparkle_ed25519_private_key
+
+# Website
+website/node_modules/
+website/dist/
+website/.firebase/
+
+# Reference / context material
+context/
+.agent/

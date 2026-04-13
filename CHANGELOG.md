@@ -1,10 +1,26 @@
 # Changelog
 
-All notable changes to VibeProxy will be documented in this file.
+All notable changes to DroidProxy will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.8.50] - 2026-01-13
+
+## [Unreleased]
+
+### Added
+- **Gemini provider support** -- OAuth login, credential monitoring, provider enable/disable, and service icon in Settings UI
+- **Gemini thinking level controls** -- Per-model thinking level pickers for Gemini 3.1 Pro (`low` / `medium` / `high`) and Gemini 3 Flash (`minimal` / `low` / `medium` / `high`)
+- **Gemini Factory custom models** -- `gemini-3.1-pro-preview` and `gemini-3-flash-preview` added to one-click Factory model provisioning
+
+## [1.8.121] - 2026-04-02
+
+### Added
+- **Codex provider support** -- OAuth login, credential monitoring, provider enable/disable, and service icon in Settings UI
+
+### Changed
+- **Granular thinking effort controls** -- Replaced the single "Force Opus 4.6 max effort" toggle with separate per-model effort pickers for Opus 4.6 (low/medium/high/max) and Sonnet 4.6 (low/medium/high)
+- **Simplified ThinkingProxy** -- Removed model suffix parsing, budget capping, max_tokens adjustment, and interleaved thinking beta header logic; thinking injection now uses per-model preferences directly with adaptive thinking only
 
 ## [1.8.120] - 2026-03-17
 

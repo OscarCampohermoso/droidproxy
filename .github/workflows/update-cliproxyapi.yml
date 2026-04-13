@@ -2,7 +2,7 @@ name: Update CLIProxyAPIPlus
 
 on:
   schedule:
-    - cron: '0 */12 * * *' # Runs every 12 hours (00:00 and 12:00 UTC)
+    - cron: '0 */12 * * *'
   workflow_dispatch:
 
 permissions:
@@ -14,219 +14,127 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  update-cliproxyapi:
+  update:
+    name: Check & bump CLIProxyAPIPlus
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.AUTO_UPDATE_TOKEN }}
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AUTO_UPDATE_TOKEN }}
 
-      - name: Close old unmerged bump PRs
-        env:
-          GH_TOKEN: ${{ secrets.AUTO_UPDATE_TOKEN }}
+      - name: Get latest upstream release
+        id: upstream
         run: |
-          set -e
-          echo "Checking for existing auto-generated bump PRs..."
-          
-          OLD_PRS=$(gh pr list --state open --json number,headRefName,title --jq '.[] | select(.headRefName | startswith("bump-cliproxyapi-")) | "\(.number)|\(.title)"' || true)
-          
-          if [ -z "$OLD_PRS" ]; then
-            echo "No existing auto-generated bump PRs found."
-          else
-            echo "Found existing auto-generated bump PRs to close:"
-            
-            while IFS='|' read -r PR_NUMBER PR_TITLE; do
-              if [ -n "$PR_NUMBER" ]; then
-                echo "Closing PR #$PR_NUMBER: $PR_TITLE"
-                gh pr close "$PR_NUMBER" --comment "Closing this PR as a newer version bump is being created." || {
-                  echo "Warning: Failed to close PR #$PR_NUMBER" >&2
-                }
-              fi
-            done <<< "$OLD_PRS"
-            
-            echo "✓ Closed old auto-generated bump PRs"
-          fi
+          set -euo pipefail
 
-      - name: Get latest CLIProxyAPIPlus release
-        id: get-latest-release
-        run: |
-          set -e
-          LATEST_JSON=$(curl -s -f https://api.github.com/repos/router-for-me/CLIProxyAPIPlus/releases/latest)
-          
-          if [ -z "$LATEST_JSON" ]; then
-            echo "Error: Failed to fetch latest release JSON" >&2
+          RELEASE_JSON=$(curl -sf https://api.github.com/repos/router-for-me/CLIProxyAPIPlus/releases/latest)
+          TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+          VERSION="${TAG#v}"
+
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::Failed to fetch latest CLIProxyAPIPlus release"
             exit 1
           fi
 
-          # Ensure pure JSON by stripping potential non-printable characters if any
-          LATEST_TAG=$(echo "$LATEST_JSON" | tr -d '\000-\037' | jq -r .tag_name)
-          
-          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
-            echo "Error: Failed to extract tag_name from JSON" >&2
-            exit 1
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream: $VERSION"
+
+      - name: Check if already up to date
+        id: check
+        run: |
+          set -euo pipefail
+
+          UPSTREAM="${{ steps.upstream.outputs.version }}"
+
+          # Check if a PR already exists for this version
+          EXISTING=$(gh pr list --state open --json headRefName --jq ".[].headRefName" | grep "bump-cliproxyapi-${UPSTREAM}" || true)
+          if [ -n "$EXISTING" ]; then
+            echo "PR already exists for v${UPSTREAM}, skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          VERSION=${LATEST_TAG#v}
-          
-          if [ -z "$VERSION" ]; then
-            echo "Error: Version string is empty" >&2
-            exit 1
+          # Check if this version is already bundled (look at recent commit messages)
+          if git log --oneline -20 | grep -qF "CLIProxyAPIPlus to ${UPSTREAM}"; then
+            echo "v${UPSTREAM} already bundled, skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Found latest version: $VERSION"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Download and Install CLIProxyAPIPlus
+      - name: Close superseded bump PRs
+        if: steps.check.outputs.skip == 'false'
         run: |
           set -e
-          VERSION="${{ steps.get-latest-release.outputs.version }}"
-          TAG="${{ steps.get-latest-release.outputs.latest_tag }}"
+
+          OLD_PRS=$(gh pr list --state open --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("bump-cliproxyapi-")) | .number' || true)
+
+          for PR in $OLD_PRS; do
+            echo "Closing superseded PR #$PR"
+            gh pr close "$PR" --comment "Superseded by newer version bump." --delete-branch || true
+          done
+
+      - name: Download CLIProxyAPIPlus
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ steps.upstream.outputs.version }}"
+          TAG="${{ steps.upstream.outputs.tag }}"
           FILENAME="CLIProxyAPIPlus_${VERSION}_darwin_arm64.tar.gz"
-          URL="https://github.com/router-for-me/CLIProxyAPIPlus/releases/download/$TAG/$FILENAME"
-          TARGET_DIR="src/Sources/Resources"
-          TARGET_FILE="$TARGET_DIR/cli-proxy-api-plus"
-          
-          # Create a temporary directory for extraction
+          URL="https://github.com/router-for-me/CLIProxyAPIPlus/releases/download/${TAG}/${FILENAME}"
+
           TEMP_DIR=$(mktemp -d)
-          # Ensure cleanup on exit (success or failure)
           trap 'rm -rf "$TEMP_DIR"' EXIT
-          echo "Using temporary directory: $TEMP_DIR"
-          
-          echo "Downloading $URL..."
-          if ! wget -q -O "$TEMP_DIR/$FILENAME" "$URL"; then
-            echo "Error: Failed to download $URL" >&2
-            exit 1
-          fi
-          
-          if [ ! -s "$TEMP_DIR/$FILENAME" ]; then
-             echo "Error: Downloaded file is empty" >&2
-             exit 1
-          fi
-          
-          echo "Validating tarball..."
-          if ! tar -tzf "$TEMP_DIR/$FILENAME" > /dev/null; then
-             echo "Error: Invalid tarball" >&2
-             exit 1
-          fi
-          
-          echo "Extracting to temporary directory..."
-          tar -xzf "$TEMP_DIR/$FILENAME" -C "$TEMP_DIR"
-          
-          # Find the binary file - look for files named cli-proxy-api-plus or CLIProxyAPIPlus
-          # These are the expected binary names, not documentation or config files
-          EXTRACTED_FILE=$(tar -tf "$TEMP_DIR/$FILENAME" | grep -E '^(cli-proxy-api-plus|CLIProxyAPIPlus)$' | head -n 1)
-          
-          # If not found by exact name, exclude all known non-binary files
-          if [ -z "$EXTRACTED_FILE" ]; then
-            EXTRACTED_FILE=$(tar -tf "$TEMP_DIR/$FILENAME" | grep -v -E '(LICENSE|README|\.md$|\.txt$|\.yaml$|\.yml$|\.json$)' | head -n 1)
-          fi
-          
-          if [ -z "$EXTRACTED_FILE" ]; then
-             echo "Error: Could not find binary in tarball" >&2
-             echo "Tarball contents:" >&2
-             tar -tf "$TEMP_DIR/$FILENAME" >&2
-             exit 1
-          fi
-          
-          echo "Found binary: $EXTRACTED_FILE"
-          
-          if [ ! -f "$TEMP_DIR/$EXTRACTED_FILE" ]; then
-             echo "Error: Extraction failed, $EXTRACTED_FILE not found" >&2
-             exit 1
-          fi
-          
-          echo "Creating target directory..."
-          mkdir -p "$TARGET_DIR"
-          
-          echo "Copying $EXTRACTED_FILE to $TARGET_FILE"
-          cp "$TEMP_DIR/$EXTRACTED_FILE" "$TARGET_FILE"
-          
-          if [ ! -f "$TARGET_FILE" ]; then
-             echo "Error: Failed to copy file to $TARGET_FILE" >&2
-             exit 1
-          fi
-          
-          if [ ! -s "$TARGET_FILE" ]; then
-             echo "Error: Target file is empty" >&2
-             exit 1
+
+          echo "Downloading: $URL"
+          curl -L -f --retry 3 --retry-delay 5 -o "$TEMP_DIR/archive.tar.gz" "$URL"
+
+          tar -tzf "$TEMP_DIR/archive.tar.gz" > /dev/null
+          tar -xzf "$TEMP_DIR/archive.tar.gz" -C "$TEMP_DIR"
+
+          BINARY=$(find "$TEMP_DIR" -maxdepth 1 -type f \( -name "CLIProxyAPIPlus" -o -name "cli-proxy-api-plus" \) | head -n 1)
+          if [ -z "$BINARY" ]; then
+            BINARY=$(find "$TEMP_DIR" -maxdepth 1 -type f ! -name "*.tar.gz" ! -name "*.md" ! -name "*.txt" ! -name "*.yaml" ! -name "*.yml" ! -name "*.json" ! -name "LICENSE*" ! -name "README*" | head -n 1)
           fi
 
-          chmod +x "$TARGET_FILE"
-          
-          echo "Verifying binary (basic checks)..."
-          # Can't execute macOS ARM64 binary on Linux runner, so just verify:
-          # 1. File exists and is not empty
-          # 2. File size is reasonable (> 1MB for a Go binary)
-          FILE_SIZE=$(stat -c%s "$TARGET_FILE" 2>/dev/null || stat -f%z "$TARGET_FILE" 2>/dev/null)
-          if [ -z "$FILE_SIZE" ] || [ "$FILE_SIZE" -lt 1048576 ]; then
-             echo "Error: Binary file is too small (${FILE_SIZE:-0} bytes)" >&2
-             exit 1
-          fi
-          
-          # Check file type (should be a Mach-O executable for darwin)
-          if command -v file >/dev/null 2>&1; then
-            FILE_TYPE=$(file "$TARGET_FILE")
-            echo "File type: $FILE_TYPE"
-            if ! echo "$FILE_TYPE" | grep -q -E "(Mach-O|executable)"; then
-              echo "Warning: File type doesn't look like a binary executable" >&2
-            fi
-          fi
-          
-          echo "✓ Binary verification passed (${FILE_SIZE} bytes)"
-          
-          # Verify git status shows only the binary was modified
-          echo "Git status:"
-          git status --porcelain
-          
-          # Ensure only the binary file is changed
-          CHANGED_FILES=$(git status --porcelain | grep -v "^ M src/Sources/Resources/cli-proxy-api-plus$" || true)
-          if [ -n "$CHANGED_FILES" ]; then
-            echo "Error: Unexpected files were modified:" >&2
-            echo "$CHANGED_FILES" >&2
+          if [ -z "$BINARY" ]; then
+            echo "::error::Could not find binary in tarball"
+            ls -la "$TEMP_DIR"
             exit 1
           fi
 
-      - name: Create Pull Request
-        id: create-pr
+          mkdir -p src/Sources/Resources
+          cp "$BINARY" src/Sources/Resources/cli-proxy-api-plus
+          chmod +x src/Sources/Resources/cli-proxy-api-plus
+
+          FILE_SIZE=$(stat -c%s src/Sources/Resources/cli-proxy-api-plus 2>/dev/null || stat -f%z src/Sources/Resources/cli-proxy-api-plus)
+          if [ "$FILE_SIZE" -lt 1048576 ]; then
+            echo "::error::Binary too small (${FILE_SIZE} bytes)"
+            exit 1
+          fi
+
+          echo "Binary installed (${FILE_SIZE} bytes)"
+
+      - name: Create pull request
+        if: steps.check.outputs.skip == 'false'
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.AUTO_UPDATE_TOKEN }}
-          commit-message: Bump CLIProxyAPIPlus to ${{ steps.get-latest-release.outputs.version }}
-          title: Bump CLIProxyAPIPlus to ${{ steps.get-latest-release.outputs.version }}
+          commit-message: 'chore(deps): bump CLIProxyAPIPlus to ${{ steps.upstream.outputs.version }}'
+          title: 'chore(deps): bump CLIProxyAPIPlus to ${{ steps.upstream.outputs.version }}'
           body: |
-            Updates bundled CLIProxyAPIPlus to version [${{ steps.get-latest-release.outputs.version }}](https://github.com/router-for-me/CLIProxyAPIPlus/releases/tag/${{ steps.get-latest-release.outputs.latest_tag }}).
-            
-            This PR was automatically generated by the Update CLIProxyAPIPlus workflow.
-          branch: bump-cliproxyapi-${{ steps.get-latest-release.outputs.version }}
+            Updates bundled CLIProxyAPIPlus to [${{ steps.upstream.outputs.version }}](https://github.com/router-for-me/CLIProxyAPIPlus/releases/tag/${{ steps.upstream.outputs.tag }}).
+
+            Merging this PR to `main` will automatically trigger a new release build.
+
+            _Auto-generated by the Update CLIProxyAPIPlus workflow._
+          branch: bump-cliproxyapi-${{ steps.upstream.outputs.version }}
           delete-branch: true
-
-      - name: Notify about new PR
-        if: steps.create-pr.outputs.pull-request-number
-        env:
-          GH_TOKEN: ${{ secrets.AUTO_UPDATE_TOKEN }}
-        run: |
-          PR_NUMBER="${{ steps.create-pr.outputs.pull-request-number }}"
-          PR_URL="${{ steps.create-pr.outputs.pull-request-url }}"
-          VERSION="${{ steps.get-latest-release.outputs.version }}"
-          
-          echo "✅ Created PR #$PR_NUMBER"
-          echo "📦 Version: $VERSION"
-          echo "🔗 URL: $PR_URL"
-          
-          # Add a comment mentioning you for notification
-          gh pr comment "$PR_NUMBER" --body "@ranaroussi New CLIProxyAPIPlus v${VERSION} available for review!
-          
-          **Changes:** Updated bundled binary to latest upstream release.
-          
-          **Action needed:** Please review and merge when ready.
-          
-          🔗 [View CLIProxyAPIPlus Release](https://github.com/router-for-me/CLIProxyAPIPlus/releases/tag/v${VERSION})"
-
-      - name: Trigger auto-release workflow
-        if: steps.create-pr.outputs.pull-request-number
-        env:
-          GH_TOKEN: ${{ secrets.AUTO_UPDATE_TOKEN }}
-        run: |
-          echo "Triggering auto-release workflow to merge PR and create release..."
-          gh workflow run auto-release.yml
-          echo "✅ Auto-release workflow triggered"

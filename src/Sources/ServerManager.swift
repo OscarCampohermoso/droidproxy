@@ -75,7 +75,9 @@ class ServerManager: ObservableObject {
 
     /// OAuth provider keys used in config.yaml oauth-excluded-models
     static let oauthProviderKeys: [String: String] = [
-        "claude": "claude"
+        "claude": "claude",
+        "codex": "codex",
+        "gemini": "gemini-cli"
     ]
 
     init(proxyPort: Int = AppPreferences.proxyPort, backendPort: Int = AppPreferences.backendPort) {
@@ -263,15 +265,19 @@ class ServerManager: ObservableObject {
         
         let authProcess = Process()
         authProcess.executableURL = URL(fileURLWithPath: bundledPath)
-        
+
         // Get the config path
         let configPath = (resourcePath as NSString).appendingPathComponent("config.yaml")
-        
+
         switch command {
         case .claudeLogin:
             authProcess.arguments = ["--config", configPath, "-claude-login"]
+        case .codexLogin:
+            authProcess.arguments = ["--config", configPath, "-codex-login"]
+        case .geminiLogin:
+            authProcess.arguments = ["--config", configPath, "-login"]
         }
-        
+
         // Create pipes for output
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -282,6 +288,31 @@ class ServerManager: ObservableObject {
         
         let capture = OutputCapture()
         
+        // For Codex login, avoid blocking on the manual callback prompt after ~15s.
+        if case .codexLogin = command {
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 12.0) {
+                if authProcess.isRunning {
+                    if let data = "\n".data(using: .utf8) {
+                        try? inputPipe.fileHandleForWriting.write(contentsOf: data)
+                        NSLog("[Auth] Sent newline to keep Codex login waiting for callback")
+                    }
+                }
+            }
+        }
+
+        // For Gemini login, send "2" after OAuth completes to select Google One (personal account)
+        // OAuth typically completes within 15-20 seconds
+        if case .geminiLogin = command {
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 20.0) {
+                if authProcess.isRunning {
+                    if let data = "2\n".data(using: .utf8) {
+                        try? inputPipe.fileHandleForWriting.write(contentsOf: data)
+                        NSLog("[Auth] Sent '2' to select Google One")
+                    }
+                }
+            }
+        }
+
         // Set environment to inherit from parent
         authProcess.environment = ProcessInfo.processInfo.environment
         
@@ -364,7 +395,8 @@ class ServerManager: ObservableObject {
         return "merged-config-\(safeIdentifier).yaml"
     }
     
-    /// Returns the config path to use, merging bundled config with provider exclusions
+    /// Returns the config path to use, merging bundled config with user settings and provider exclusions.
+    /// User settings (allow-remote, secret-key) are stored in UserDefaults so they persist across app updates.
     func getConfigPath() -> String {
         guard let resourcePath = Bundle.main.resourcePath else {
             return ""
@@ -372,15 +404,27 @@ class ServerManager: ObservableObject {
 
         let bundledConfigPath = (resourcePath as NSString).appendingPathComponent("config.yaml")
         let authDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cli-proxy-api")
-
-        do {
-            try FileManager.default.createDirectory(at: authDir, withIntermediateDirectories: true)
-        } catch {
-            NSLog("[ServerManager] Failed to create auth directory: %@", error.localizedDescription)
+        guard var configContent = try? String(contentsOfFile: bundledConfigPath, encoding: .utf8) else {
             return bundledConfigPath
         }
 
-        // Build list of disabled providers
+        if let portLineRange = configContent.range(of: #"(?m)^port:\s*.*$"#, options: .regularExpression) {
+            configContent.replaceSubrange(portLineRange, with: "port: \(backendPort)")
+        } else {
+            configContent += "\nport: \(backendPort)\n"
+        }
+
+        if let allowRemoteRange = configContent.range(of: #"(?m)^  allow-remote:\s*.*$"#, options: .regularExpression) {
+            configContent.replaceSubrange(allowRemoteRange, with: "  allow-remote: \(AppPreferences.allowRemote)")
+        }
+
+        let escapedSecretKey = AppPreferences.secretKey
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        if let secretKeyRange = configContent.range(of: #"(?m)^  secret-key:\s*.*$"#, options: .regularExpression) {
+            configContent.replaceSubrange(secretKeyRange, with: "  secret-key: \"\(escapedSecretKey)\"")
+        }
+
         var disabledProviders: [String] = []
         for (serviceKey, oauthKey) in Self.oauthProviderKeys {
             if !isProviderEnabled(serviceKey) {
@@ -388,37 +432,23 @@ class ServerManager: ObservableObject {
             }
         }
 
-        guard let bundledContent = try? String(contentsOfFile: bundledConfigPath, encoding: .utf8) else {
-            return bundledConfigPath
-        }
-
-        var mergedBaseContent = bundledContent
-        if let portLineRange = mergedBaseContent.range(of: #"(?m)^port:\s*.*$"#, options: .regularExpression) {
-            mergedBaseContent.replaceSubrange(portLineRange, with: "port: \(backendPort)")
-        } else {
-            mergedBaseContent += "\nport: \(backendPort)\n"
-        }
-
-        var additionalConfig = ""
-
         if !disabledProviders.isEmpty {
-            additionalConfig += """
+            configContent += """
 
 # Provider exclusions (auto-added by DroidProxy)
 oauth-excluded-models:
 
 """
             for provider in disabledProviders.sorted() {
-                additionalConfig += "  \(provider):\n"
-                additionalConfig += "    - \"*\"\n"
+                configContent += "  \(provider):\n"
+                configContent += "    - \"*\"\n"
             }
         }
 
-        let mergedContent = mergedBaseContent + additionalConfig
         let mergedConfigPath = authDir.appendingPathComponent(runtimeConfigFilename())
-        
         do {
-            try mergedContent.write(to: mergedConfigPath, atomically: true, encoding: .utf8)
+            try FileManager.default.createDirectory(at: authDir, withIntermediateDirectories: true)
+            try configContent.write(to: mergedConfigPath, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: mergedConfigPath.path)
             return mergedConfigPath.path
         } catch {
@@ -479,4 +509,6 @@ oauth-excluded-models:
 
 enum AuthCommand: Equatable {
     case claudeLogin
+    case codexLogin
+    case geminiLogin
 }
